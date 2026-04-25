@@ -1,0 +1,40 @@
+{
+  "name": "feishuagent",
+  "version": "1.0.0",
+  "description": "This intelligent knowledge assistant, built on the Feishu ecosystem, aggregates scattered information from internal documents, meetings, and chats to break down information silos through precise Q&A and proactive push. It refragments information into high-density knowledge and actively serves user scenarios in appropriate forms at the right time.",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev:trigger": "trigger dev",
+    "db:reset": "wsl docker exec feishu-postgres psql -U feishu -d feishu_agent -f /tmp/schema.sql"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/singletaps/Feishu-Corporate-Office-Knowledge-Integration-and-Distribution-Agent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/singletaps/Feishu-Corporate-Office-Knowledge-Integration-and-Distribution-Agent/issues"
+  },
+  "homepage": "https://github.com/singletaps/Feishu-Corporate-Office-Knowledge-Integration-and-Distribution-Agent#readme",
+  "dependencies": {
+    "@trigger.dev/sdk": "4.4.4",
+    "dotenv": "^17.4.2",
+    "ioredis": "^5.10.1",
+    "pg": "^8.20.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@trigger.dev/build": "4.4.4",
+    "@types/node": "^22.15.3",
+    "@types/pg": "^8.20.0",
+    "trigger.dev": "4.4.4"
+  }
+}
