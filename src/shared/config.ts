@@ -4,7 +4,14 @@ import "dotenv/config"
 export interface AppConfig {
   database: { url: string }
   redis: { url: string }
-  feishu: { appId: string; appSecret: string; baseToken: string; baseTableId: string; baseUrl: string }
+  feishu: {
+    appId: string
+    appSecret: string
+    baseToken: string
+    baseTableId: string
+    baseUrl: string
+    verificationToken: string
+  }
   llm: { baseUrl: string; apiKey: string; model: string }
   openclaw: {
     baseUrl: string
@@ -61,6 +68,7 @@ export const config: AppConfig = {
     baseToken: requireEnv("FEISHU_BASE_TOKEN"),
     baseTableId: requireEnv("FEISHU_BASE_TABLE_ID"),
     baseUrl: requireEnv("FEISHU_BASE_URL"),
+    verificationToken: process.env.FEISHU_VERIFICATION_TOKEN ?? "",
   },
   /** Direct API (e.g. DeepSeek) — optional; main LLM path is OpenClaw Gateway. */
   llm: {

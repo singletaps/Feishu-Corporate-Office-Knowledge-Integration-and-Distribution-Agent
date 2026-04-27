@@ -16,7 +16,7 @@ export async function upsertWorkItemRecord(item: WorkItem): Promise<BaseRecordRe
   const baseRecordId = bindingRecordId ?? await findRecordIdByWorkItemId(item.id)
   const existingRecordId = baseRecordId
   const linkedTaskId = await findFeishuTaskId(item.id)
-  const fields = toBaseFields(item, linkedTaskId)
+  const fields = await toBaseFields(item, linkedTaskId)
 
   log.info("upserting work item to base", {
     workItemId: item.id,
@@ -140,7 +140,8 @@ async function findFeishuTaskId(workItemId: string): Promise<string | null> {
   return binding?.externalId ?? null
 }
 
-function toBaseFields(item: WorkItem, linkedTaskId: string | null): Record<string, unknown> {
+async function toBaseFields(item: WorkItem, linkedTaskId: string | null): Promise<Record<string, unknown>> {
+  const evidence = await findSourceEvidence(item.id)
   return {
     "事项标题": item.title,
     "事项类型": item.itemType,
@@ -152,9 +153,62 @@ function toBaseFields(item: WorkItem, linkedTaskId: string | null): Record<strin
     "置信度": item.confidenceScore,
     "来源类型": item.originChannel,
     "来源ID": item.originContextId,
+    "来源证据": evidence.summary,
+    "关联背景链接": evidence.primaryUrl,
     "飞书任务ID": linkedTaskId,
     "WorkItem ID": item.id,
   }
+}
+
+async function findSourceEvidence(workItemId: string): Promise<{ summary: string | null; primaryUrl: string | null }> {
+  const refs = await db.query<{
+    relationType: string
+    excerpt: string | null
+    assetType: string | null
+    sourceId: string | null
+    contentText: string | null
+  }>(
+    `SELECT
+       sr.relation_type,
+       sr.excerpt,
+       ka.asset_type,
+       ka.source_id,
+       ka.content_text
+     FROM source_references sr
+     LEFT JOIN knowledge_assets ka ON ka.id = sr.asset_id
+     WHERE sr.target_type = 'work_item'
+       AND sr.target_id = $1
+     ORDER BY sr.created_at ASC
+     LIMIT 5`,
+    [workItemId],
+  )
+
+  if (refs.length === 0) {
+    return { summary: null, primaryUrl: null }
+  }
+
+  const summary = refs
+    .map((ref) => {
+      const source = [ref.assetType, ref.sourceId].filter(Boolean).join(":")
+      const excerpt = ref.excerpt ? ref.excerpt.replace(/\s+/g, " ").slice(0, 120) : ""
+      return `${ref.relationType}${source ? ` ${source}` : ""}${excerpt ? ` - ${excerpt}` : ""}`
+    })
+    .join("\n")
+
+  const primaryUrl = refs
+    .map((ref) => ref.contentText)
+    .map(extractSourceUrl)
+    .find((url): url is string => Boolean(url)) ?? null
+
+  return { summary, primaryUrl }
+}
+
+function extractSourceUrl(contentText: string | null): string | null {
+  if (!contentText) return null
+  const sourceLine = contentText.match(/来源链接:\s*(\S+)/u)
+  if (sourceLine?.[1]) return sourceLine[1]
+  const url = contentText.match(/https?:\/\/\S+/u)
+  return url?.[0] ?? null
 }
 
 function formatDateTime(date: Date): string {

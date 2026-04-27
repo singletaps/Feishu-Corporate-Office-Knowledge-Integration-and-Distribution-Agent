@@ -10,7 +10,7 @@ export {
   listActiveItems,
   syncExternalTaskStatuses,
 } from "./work-item.js"
-export { generateWeeklyInsight } from "./artifact.js"
+export { generatePreMeetingBrief, generateTaskDigest, generateWeeklyInsight } from "./artifact.js"
 export { callAgent } from "./openclaw-client.js"
 export {
   OpenClawGatewayPairingRequiredError,

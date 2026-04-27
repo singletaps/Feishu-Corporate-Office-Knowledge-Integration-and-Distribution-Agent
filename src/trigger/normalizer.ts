@@ -5,16 +5,24 @@ import type { TriggerEvent } from "../shared/types.js"
 interface RawFeishuEvent {
   event_id?: string
   event_type?: string
+  type?: string
   create_time?: string
+  timestamp?: string
+  header?: {
+    event_id?: string
+    event_type?: string
+    create_time?: string
+  }
   event?: Record<string, unknown>
   [key: string]: unknown
 }
 
 export function normalizeFeishuEvent(raw: RawFeishuEvent): TriggerEvent {
-  const eventId = raw.event_id ?? randomUUID()
-  const eventType = raw.event_type ?? "unknown"
-  const occurredAt = raw.create_time
-    ? new Date(Number(raw.create_time) * 1000)
+  const eventId = raw.event_id ?? raw.header?.event_id ?? randomUUID()
+  const eventType = raw.event_type ?? raw.header?.event_type ?? raw.type ?? "unknown"
+  const createTime = raw.create_time ?? raw.header?.create_time ?? raw.timestamp
+  const occurredAt = createTime
+    ? new Date(Number(createTime.length > 13 ? Number(createTime) / 1000 : createTime) * 1000)
     : new Date()
 
   log.info("normalizing feishu event", { eventId, eventType })
@@ -43,8 +51,11 @@ export function normalizeCliCommand(command: string, args: Record<string, string
 }
 
 export function normalizeCardCallback(callbackPayload: Record<string, unknown>): TriggerEvent {
-  const messageId = String(callbackPayload.open_message_id ?? randomUUID())
-  const action = callbackPayload.action as { value?: { action?: string; workItemId?: string } } | undefined
+  const event = callbackPayload.event as Record<string, unknown> | undefined
+  const context = event?.context as Record<string, unknown> | undefined
+  const topContext = callbackPayload.context as Record<string, unknown> | undefined
+  const messageId = String(context?.open_message_id ?? topContext?.open_message_id ?? callbackPayload.open_message_id ?? randomUUID())
+  const action = (event?.action ?? callbackPayload.action) as { value?: { action?: string; workItemId?: string } } | undefined
   const actionName = action?.value?.action ?? "unknown"
 
   return {

@@ -5,6 +5,33 @@ import { acknowledgePushRecordByMessage } from "../evaluation/push-records.js"
 import { AppError } from "../shared/errors.js"
 
 export interface CardCallbackPayload {
+  schema?: string
+  header?: {
+    token?: string
+    event_type?: string
+  }
+  event?: {
+    operator?: {
+      open_id?: string
+    }
+    action?: {
+      value?: {
+        action?: string
+        workItemId?: string
+      }
+    }
+    context?: {
+      open_message_id?: string
+      open_chat_id?: string
+    }
+  }
+  operator?: {
+    open_id?: string
+  }
+  context?: {
+    open_message_id?: string
+    open_chat_id?: string
+  }
   open_id?: string
   open_message_id?: string
   action?: {
@@ -22,13 +49,15 @@ export async function handleCardCallback(payload: CardCallbackPayload): Promise<
   newStatus: string | null
   taskCreated: string | null
 }> {
-  const value = payload.action?.value ?? {}
+  const event = payload.event
+  const value = event?.action?.value ?? payload.action?.value ?? {}
   const action = value.action ?? ""
   const workItemId = value.workItemId ?? null
-  const actorId = payload.open_id ?? "unknown"
+  const actorId = event?.operator?.open_id ?? payload.operator?.open_id ?? payload.open_id ?? "unknown"
+  const messageId = event?.context?.open_message_id ?? payload.context?.open_message_id ?? payload.open_message_id
 
-  if (payload.open_message_id) {
-    await acknowledgePushRecordByMessage(payload.open_message_id)
+  if (messageId) {
+    await acknowledgePushRecordByMessage(messageId)
   }
 
   if (action === "confirm" && workItemId) {

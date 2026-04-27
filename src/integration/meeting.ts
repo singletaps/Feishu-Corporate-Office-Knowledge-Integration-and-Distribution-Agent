@@ -3,16 +3,21 @@ import { log } from "../evaluation/logger.js"
 import type { MeetingMinutes, FeishuUser } from "../shared/types.js"
 
 interface VcMeetingResponse {
+  data?: {
+    meeting?: VcMeetingResponse["meeting"]
+  }
   meeting?: {
     id?: string
     topic?: string
     start_time?: string
     end_time?: string
-    participants?: Array<{ user?: { id?: string; user_name?: string } }>
+    participants?: Array<{ id?: string; user?: { id?: string; user_name?: string } }>
   }
 }
 
 interface VcNotesResponse {
+  note_doc_token?: string
+  verbatim_doc_token?: string
   minute_token?: string
   meeting_topic?: string
   owner?: { user_name?: string }
@@ -24,6 +29,22 @@ interface VcNotesResponse {
   }>
 }
 
+interface VcNotesEnvelope {
+  data?: {
+    notes?: VcNotesResponse[]
+  }
+}
+
+interface DocFetchResponse {
+  data?: {
+    document?: {
+      content?: string
+    }
+    markdown?: string
+    content?: string
+  }
+}
+
 export async function getMeetingDetail(meetingId: string) {
   log.info("fetching meeting detail", { meetingId })
   const data = (await larkCli([
@@ -33,13 +54,13 @@ export async function getMeetingDetail(meetingId: string) {
     "--params",
     JSON.stringify({ meeting_id: meetingId, with_participants: true }),
   ])) as VcMeetingResponse
-  const m = data?.meeting
+  const m = data?.data?.meeting ?? data?.meeting
   return {
     meetingId: m?.id ?? meetingId,
     title: m?.topic ?? "",
     participants: (m?.participants ?? []).map((p) => ({
-      openId: p.user?.id ?? "",
-      name: p.user?.user_name ?? "",
+      openId: p.user?.id ?? p.id ?? "",
+      name: p.user?.user_name ?? p.user?.id ?? p.id ?? "",
     })),
     startTime: m?.start_time ? new Date(Number(m.start_time) * 1000) : new Date(),
     endTime: m?.end_time ? new Date(Number(m.end_time) * 1000) : new Date(),
@@ -48,9 +69,9 @@ export async function getMeetingDetail(meetingId: string) {
 
 export async function getMinutesByMeetingId(meetingId: string): Promise<MeetingMinutes> {
   log.info("fetching meeting minutes via +notes", { meetingId })
-  const data = (await larkCli(["vc", "+notes", "--meeting-ids", meetingId])) as VcNotesResponse | VcNotesResponse[]
+  const data = (await larkCli(["vc", "+notes", "--meeting-ids", meetingId])) as VcNotesEnvelope | VcNotesResponse | VcNotesResponse[]
 
-  const notes = Array.isArray(data) ? data[0] : data
+  const notes = unwrapNotesResponse(data)
   if (!notes) {
     log.warn("no notes found for meeting", { meetingId })
     return buildEmptyMinutes(meetingId)
@@ -61,9 +82,9 @@ export async function getMinutesByMeetingId(meetingId: string): Promise<MeetingM
 
 export async function getMinutesByToken(minuteToken: string): Promise<MeetingMinutes> {
   log.info("fetching minutes by token", { minuteToken })
-  const data = (await larkCli(["vc", "+notes", "--minute-tokens", minuteToken])) as VcNotesResponse | VcNotesResponse[]
+  const data = (await larkCli(["vc", "+notes", "--minute-tokens", minuteToken])) as VcNotesEnvelope | VcNotesResponse | VcNotesResponse[]
 
-  const notes = Array.isArray(data) ? data[0] : data
+  const notes = unwrapNotesResponse(data)
   if (!notes) {
     log.warn("no notes found for token", { minuteToken })
     return buildEmptyMinutes(minuteToken)
@@ -88,7 +109,7 @@ export async function searchMeetings(params: {
   return larkCli(args)
 }
 
-function parseNotes(contextId: string, notes: VcNotesResponse): MeetingMinutes {
+async function parseNotes(contextId: string, notes: VcNotesResponse): Promise<MeetingMinutes> {
   const transcript = (notes.transcripts ?? [])
     .map((t) => {
       const speaker = t.speaker?.user_name ?? "Unknown"
@@ -101,7 +122,8 @@ function parseNotes(contextId: string, notes: VcNotesResponse): MeetingMinutes {
     .map((p) => (p.paragraph?.elements ?? []).map((e) => e.text_run?.text ?? "").join(""))
     .join("\n")
 
-  const fullTranscript = transcript || paragraphText
+  const docText = transcript || paragraphText ? "" : await fetchNotesDocumentText(notes)
+  const fullTranscript = transcript || paragraphText || docText
 
   const actionItems = (notes.todos ?? []).map((t) => t.task_content ?? "")
 
@@ -120,6 +142,27 @@ function parseNotes(contextId: string, notes: VcNotesResponse): MeetingMinutes {
     startTime: new Date(),
     endTime: new Date(),
   }
+}
+
+async function fetchNotesDocumentText(notes: VcNotesResponse): Promise<string> {
+  const token = notes.verbatim_doc_token ?? notes.note_doc_token
+  if (!token) return ""
+
+  log.info("fetching meeting notes document", { token })
+  const data = await larkCli([
+    "docs",
+    "+fetch",
+    "--doc",
+    token,
+  ]) as DocFetchResponse
+
+  return data.data?.document?.content ?? data.data?.markdown ?? data.data?.content ?? ""
+}
+
+function unwrapNotesResponse(data: VcNotesEnvelope | VcNotesResponse | VcNotesResponse[]): VcNotesResponse | undefined {
+  if (Array.isArray(data)) return data[0]
+  if ("data" in data && data.data?.notes) return data.data.notes[0]
+  return data as VcNotesResponse
 }
 
 function buildEmptyMinutes(contextId: string): MeetingMinutes {

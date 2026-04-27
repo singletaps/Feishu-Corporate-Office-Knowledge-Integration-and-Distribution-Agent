@@ -66,27 +66,49 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
 async function handleCardCallbackRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
-    const body = await readJson(req) as CardCallbackPayload & { token?: string }
-    const headers = new Headers(req.headers as Record<string, string>)
-    const tokenAuthorized = body.token && body.token === config.agentTools.token
+    const body = await readJson(req) as CardCallbackPayload & { token?: string; challenge?: string }
+    if (body.challenge) {
+      sendJson(res, 200, { challenge: body.challenge })
+      return
+    }
 
-    if (!authorize(headers) && !tokenAuthorized) {
+    const headers = new Headers(req.headers as Record<string, string>)
+    const callbackToken = body.header?.token ?? body.token
+    const tokenAuthorized = callbackToken
+      && (callbackToken === config.feishu.verificationToken || callbackToken === config.agentTools.token)
+
+    if (!authorize(headers) && config.feishu.verificationToken && !tokenAuthorized) {
       sendJson(res, 401, { ok: false, error: "unauthorized" })
       return
     }
 
     const result = await handleCardCallback(body)
-    sendJson(res, 200, result)
+    sendJson(res, 200, {
+      toast: {
+        type: "success",
+        content: `已处理：${result.action}`,
+      },
+    })
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error))
     log.error("card callback failed", { error: err.message, stack: err.stack })
 
     if (error instanceof AppError) {
-      sendJson(res, 400, { ok: false, code: error.code, error: error.message, context: error.context })
+      sendJson(res, 200, {
+        toast: {
+          type: "error",
+          content: error.message,
+        },
+      })
       return
     }
 
-    sendJson(res, 500, { ok: false, code: "CARD_CALLBACK_FAILED", error: err.message })
+    sendJson(res, 200, {
+      toast: {
+        type: "error",
+        content: `卡片回调失败：${err.message}`,
+      },
+    })
   }
 }
 

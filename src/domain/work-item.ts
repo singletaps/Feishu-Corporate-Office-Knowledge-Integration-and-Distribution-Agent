@@ -65,14 +65,19 @@ export async function reconcileAndSave(
   originChannel: OriginChannel,
   originContextId: string,
   participants: FeishuUser[],
-  options: { changedById?: string } = {},
+  options: {
+    changedById?: string
+    sourceAssetId?: string
+    sourceExcerpt?: string
+    mergeAcrossSources?: boolean
+  } = {},
 ): Promise<WorkItem[]> {
   log.info("reconciling work items", { count: extracted.length, originChannel, originContextId })
 
   const saved: WorkItem[] = []
   for (const item of extracted) {
     const ownerUserId = resolveOwner(item.ownerName, participants)
-    const dedupeKey = generateDedupeKey(item.title, originContextId)
+    const dedupeKey = generateDedupeKey(item.title, originContextId, options.mergeAcrossSources ?? false)
     const needConfirm = item.confidenceScore < 0.6
 
     const existing = await db.queryOne<WorkItem>(
@@ -82,13 +87,33 @@ export async function reconcileAndSave(
 
     if (existing) {
       log.info("merging with existing item", { existingId: existing.id, newTitle: item.title })
+      const isCrossSourceMerge = existing.originChannel !== originChannel || existing.originContextId !== originContextId
       const updated = await db.query<WorkItem>(
         `UPDATE work_items SET
            last_detected_at = now(), updated_at = now(),
-           confidence_score = GREATEST(confidence_score, $2)
+           confidence_score = GREATEST(confidence_score, $2),
+           need_human_confirm = need_human_confirm OR $3
          WHERE id = $1 RETURNING *`,
-        [existing.id, item.confidenceScore],
+        [existing.id, item.confidenceScore, isCrossSourceMerge],
       )
+      await attachSourceReference(updated[0].id, options, item.confidenceScore, "evidence_for")
+      await db.execute(
+        `INSERT INTO work_item_audit_log
+           (work_item_id, change_type, to_value, reason, changed_by_type, changed_by_id)
+         VALUES ($1, 'merge', $2, $3, 'workflow', $4)`,
+        [
+          existing.id,
+          `${originChannel}:${originContextId}`,
+          isCrossSourceMerge ? "possible cross-source duplicate merged" : "duplicate source item detected",
+          options.changedById ?? "reconcile-and-save",
+        ],
+      )
+      if (isCrossSourceMerge) {
+        await ensureHumanReviewTask(
+          existing.id,
+          `请确认来自 ${originChannel}:${originContextId} 的事项是否应与现有事项合并。`,
+        )
+      }
       saved.push(updated[0])
     } else {
       log.info("creating new item", { title: item.title, itemType: item.itemType })
@@ -116,13 +141,22 @@ export async function reconcileAndSave(
         ],
       )
       saved.push(created[0])
+      await attachSourceReference(created[0].id, options, item.confidenceScore, "derived_from")
 
       await db.execute(
         `INSERT INTO work_item_audit_log
            (work_item_id, change_type, to_value, reason, changed_by_type, changed_by_id)
-         VALUES ($1, 'create', $2, 'auto-extracted from meeting', 'workflow', $3)`,
-        [created[0].id, item.itemType, options.changedById ?? "reconcile-and-save"],
+         VALUES ($1, 'create', $2, $4, 'workflow', $3)`,
+        [
+          created[0].id,
+          item.itemType,
+          options.changedById ?? "reconcile-and-save",
+          `auto-extracted from ${originChannel}`,
+        ],
       )
+      if (needConfirm) {
+        await ensureHumanReviewTask(created[0].id, "抽取置信度较低，需要人工确认。")
+      }
     }
   }
 
@@ -321,8 +355,58 @@ function resolveOwner(ownerName: string | null, participants: FeishuUser[]): str
   return match?.openId ?? null
 }
 
-function generateDedupeKey(title: string, contextId: string): string {
+async function attachSourceReference(
+  workItemId: string,
+  options: { sourceAssetId?: string; sourceExcerpt?: string },
+  confidenceScore: number,
+  relationType: "derived_from" | "evidence_for",
+): Promise<void> {
+  if (!options.sourceAssetId && !options.sourceExcerpt) return
+
+  await db.execute(
+    `INSERT INTO source_references
+       (target_type, target_id, asset_id, relation_type, excerpt, confidence_score)
+     VALUES ('work_item', $1, $2, $3, $4, $5)`,
+    [
+      workItemId,
+      options.sourceAssetId ?? null,
+      relationType,
+      options.sourceExcerpt ?? null,
+      confidenceScore,
+    ],
+  )
+}
+
+async function ensureHumanReviewTask(workItemId: string, reason: string): Promise<void> {
+  const existing = await db.queryOne<{ id: string }>(
+    `SELECT id FROM human_review_tasks
+     WHERE target_type = 'work_item'
+       AND target_id = $1
+       AND review_status = 'pending'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [workItemId],
+  )
+  if (existing) return
+
+  const created = await db.query<{ id: string }>(
+    `INSERT INTO human_review_tasks (target_type, target_id, review_reason)
+     VALUES ('work_item', $1, $2)
+     RETURNING id`,
+    [workItemId, reason],
+  )
+
+  await db.execute(
+    `UPDATE work_items
+     SET current_review_task_id = $2, updated_at = now()
+     WHERE id = $1`,
+    [workItemId, created[0]?.id ?? null],
+  )
+}
+
+function generateDedupeKey(title: string, contextId: string, mergeAcrossSources: boolean): string {
   const normalized = title.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 80)
+  if (mergeAcrossSources) return `global::${normalized}`
   return `${contextId}::${normalized}`
 }
 

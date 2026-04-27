@@ -147,8 +147,16 @@ export function renderRiskAlertCard(items: WorkItem[]): Record<string, unknown> 
 
 export function renderPreMeetingCard(brief: KnowledgeArtifact): Record<string, unknown> {
   const payload = brief.contentPayload ?? {}
-  const relatedItems = (payload.relatedItems as string[]) ?? []
+  const relatedItems = Array.isArray(payload.relatedItems) ? payload.relatedItems : []
   const relatedDocs = (payload.relatedDocs as string[]) ?? []
+  const relatedItemLines = relatedItems.map((item) => {
+    if (typeof item === "string") return `- ${item}`
+    if (item && typeof item === "object" && "title" in item) {
+      const typed = item as { title?: string; status?: string }
+      return `- ${typed.title ?? "未命名事项"}${typed.status ? `（${typed.status}）` : ""}`
+    }
+    return "- 未命名事项"
+  })
 
   return {
     config: { wide_screen_mode: true },
@@ -164,7 +172,7 @@ export function renderPreMeetingCard(brief: KnowledgeArtifact): Record<string, u
       ...(relatedItems.length > 0
         ? [
             { tag: "hr" },
-            { tag: "markdown", content: `**相关未结事项：**\n${relatedItems.map((i) => `- ${i}`).join("\n")}` },
+            { tag: "markdown", content: `**相关未结事项：**\n${relatedItemLines.join("\n")}` },
           ]
         : []),
       ...(relatedDocs.length > 0

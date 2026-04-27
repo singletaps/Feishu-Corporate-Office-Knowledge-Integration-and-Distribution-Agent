@@ -6,3 +6,4 @@ dist/
 .data/
 .tmp-openclaw/
 message-content-*.json
+base-record-*.json
