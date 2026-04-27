@@ -3,3 +3,6 @@ dist/
 .env
 .trigger
 *.log
+.data/
+.tmp-openclaw/
+message-content-*.json

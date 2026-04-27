@@ -1,6 +1,5 @@
-import { renderPostMeetingCard, renderRiskAlertCard, renderPreMeetingCard } from "./render.js"
+import { renderPostMeetingCard, renderRiskAlertCard, renderPreMeetingCard, renderWeeklyInsightCard } from "./render.js"
 import { sendCardToChat, sendCardToUser } from "../integration/message.js"
-import { db } from "../shared/db.js"
 import { log } from "../evaluation/logger.js"
 import type { WorkItem, KnowledgeArtifact } from "../shared/types.js"
 
@@ -12,15 +11,6 @@ export async function sendPostMeetingConfirmCard(
   log.info("sending post-meeting confirm card", { itemCount: items.length, chatId })
   const cardJson = renderPostMeetingCard(items, meetingTitle)
   const messageId = await sendCardToChat(chatId, cardJson)
-
-  for (const item of items) {
-    await db.execute(
-      `INSERT INTO push_records
-         (artifact_id, channel_type, target_type, target_id, delivery_status, sent_at)
-       VALUES (NULL, 'card', 'group', $1, 'sent', now())`,
-      [chatId],
-    )
-  }
 
   log.info("post-meeting card sent", { messageId, itemCount: items.length })
   return messageId
@@ -49,5 +39,11 @@ export async function sendPreMeetingCard(
 ): Promise<string> {
   log.info("sending pre-meeting card", { chatId })
   const cardJson = renderPreMeetingCard(brief)
+  return sendCardToChat(chatId, cardJson)
+}
+
+export async function sendWeeklyInsightCard(insight: KnowledgeArtifact, chatId: string): Promise<string> {
+  log.info("sending weekly insight card", { chatId, artifactId: insight.id })
+  const cardJson = renderWeeklyInsightCard(insight)
   return sendCardToChat(chatId, cardJson)
 }

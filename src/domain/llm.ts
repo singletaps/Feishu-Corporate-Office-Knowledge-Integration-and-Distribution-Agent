@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { config } from "../shared/config.js"
 import { log } from "../evaluation/logger.js"
 import { LLMExtractionError } from "../shared/errors.js"
+import { callAgent } from "./openclaw-client.js"
 import type { ZodType } from "zod"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -60,29 +60,11 @@ function parseTemplateMessages(rendered: string): ChatMessage[] {
 }
 
 async function rawChat(messages: ChatMessage[]): Promise<LLMResponse> {
-  const body = JSON.stringify({
-    model: config.llm.model,
-    messages,
-    temperature: 0.1,
-    max_tokens: 4096,
-    response_format: { type: "json_object" },
-  })
-
-  const response = await fetch(`${config.llm.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.llm.apiKey}`,
-    },
-    body,
-  })
-
-  if (!response.ok) {
-    const text = await response.text()
-    throw new LLMExtractionError("raw", `HTTP ${response.status}: ${text.slice(0, 200)}`)
+  const agentResult = await callAgent(messages)
+  return {
+    choices: [{ message: { content: agentResult.content } }],
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
   }
-
-  return response.json() as Promise<LLMResponse>
 }
 
 export async function callLLM<T>(
@@ -102,22 +84,19 @@ export async function callLLM<T>(
 
   log.debug("LLM raw response", { templateName, contentLength: content.length })
 
-  const parsed = JSON.parse(content)
-  const result = outputSchema.safeParse(parsed)
+  let result = parseAndValidate(content, templateName, outputSchema)
 
   if (!result.success) {
-    log.warn("schema validation failed, retrying once", {
+    log.warn("LLM structured output invalid, retrying once", {
       templateName,
-      errors: result.error.issues.map((i) => i.message),
+      errors: result.error,
     })
 
     const retryResponse = await rawChat(messages)
     const retryContent = retryResponse.choices[0]?.message?.content ?? ""
-    const retryParsed = JSON.parse(retryContent)
-
-    const retryResult = outputSchema.safeParse(retryParsed)
+    const retryResult = parseAndValidate(retryContent, templateName, outputSchema)
     if (!retryResult.success) {
-      throw new LLMExtractionError(templateName, `Schema validation failed after retry: ${retryResult.error.issues.map((i) => i.message).join(", ")}`)
+      throw new LLMExtractionError(templateName, `Structured output invalid after retry: ${retryResult.error}`)
     }
 
     return {
@@ -142,4 +121,51 @@ export async function callLLM<T>(
       output: usage?.completion_tokens ?? 0,
     },
   }
+}
+
+function parseAndValidate<T>(
+  content: string,
+  templateName: string,
+  outputSchema: ZodType<T>,
+): { success: true; data: T } | { success: false; error: string } {
+  let parsed: unknown
+  try {
+    parsed = parseJsonResponse(content)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { success: false, error: message }
+  }
+
+  const result = outputSchema.safeParse(parsed)
+  if (!result.success) {
+    return {
+      success: false,
+      error: result.error.issues.map((issue) => issue.message).join(", "),
+    }
+  }
+  return { success: true, data: result.data }
+}
+
+function parseJsonResponse(content: string): unknown {
+  const normalized = extractJsonPayload(content)
+  try {
+    return JSON.parse(normalized)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Invalid JSON response: ${message}`)
+  }
+}
+
+function extractJsonPayload(content: string): string {
+  const trimmed = content.trim()
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fenced?.[1]) return fenced[1].trim()
+
+  const firstObject = trimmed.indexOf("{")
+  const lastObject = trimmed.lastIndexOf("}")
+  if (firstObject >= 0 && lastObject > firstObject) {
+    return trimmed.slice(firstObject, lastObject + 1)
+  }
+
+  return trimmed
 }

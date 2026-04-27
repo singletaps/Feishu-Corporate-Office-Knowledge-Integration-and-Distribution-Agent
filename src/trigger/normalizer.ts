@@ -41,3 +41,19 @@ export function normalizeCliCommand(command: string, args: Record<string, string
     receivedAt: new Date(),
   }
 }
+
+export function normalizeCardCallback(callbackPayload: Record<string, unknown>): TriggerEvent {
+  const messageId = String(callbackPayload.open_message_id ?? randomUUID())
+  const action = callbackPayload.action as { value?: { action?: string; workItemId?: string } } | undefined
+  const actionName = action?.value?.action ?? "unknown"
+
+  return {
+    eventId: randomUUID(),
+    eventType: "card_callback",
+    source: "card_callback",
+    idempotencyKey: `card_callback::${messageId}::${actionName}`,
+    payload: callbackPayload,
+    occurredAt: new Date(),
+    receivedAt: new Date(),
+  }
+}

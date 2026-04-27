@@ -1,7 +1,9 @@
+import { config } from "../shared/config.js"
+
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 } as const
 type Level = keyof typeof LEVELS
 
-const currentLevel: Level = (process.env.LOG_LEVEL as Level) ?? "info"
+const currentLevel: Level = config.logLevel
 
 function shouldLog(level: Level): boolean {
   return LEVELS[level] >= LEVELS[currentLevel]

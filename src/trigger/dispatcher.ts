@@ -3,8 +3,16 @@ import { redis } from "../shared/redis.js"
 import { log } from "../evaluation/logger.js"
 import type { TriggerEvent } from "../shared/types.js"
 import type { postMeetingExtraction } from "../workflow/post-meeting.js"
+import type { cardCallbackFlow } from "../workflow/card-callback.js"
 
 const IDEMPOTENCY_TTL = 3600
+type EventHandler = (event: TriggerEvent) => Promise<{ dispatched: boolean; runId?: string }>
+
+const eventHandlers: Record<string, EventHandler> = {
+  "vc.meeting.meeting_ended_v1": handleMeetingEnd,
+  meeting_end: handleMeetingEnd,
+  card_callback: handleCardCallback,
+}
 
 export async function dispatchToWorkflow(event: TriggerEvent): Promise<{ dispatched: boolean; runId?: string }> {
   const isDuplicate = await checkIdempotency(event.idempotencyKey)
@@ -15,16 +23,12 @@ export async function dispatchToWorkflow(event: TriggerEvent): Promise<{ dispatc
 
   await markProcessed(event.idempotencyKey)
 
-  switch (event.eventType) {
-    case "vc.meeting.meeting_ended_v1":
-    case "meeting_end": {
-      return handleMeetingEnd(event)
-    }
-    default: {
-      log.info("unhandled event type, ignoring", { eventType: event.eventType })
-      return { dispatched: false }
-    }
+  const handler = eventHandlers[event.eventType]
+  if (!handler) {
+    log.info("unhandled event type, ignoring", { eventType: event.eventType })
+    return { dispatched: false }
   }
+  return handler(event)
 }
 
 async function handleMeetingEnd(event: TriggerEvent): Promise<{ dispatched: boolean; runId?: string }> {
@@ -46,6 +50,12 @@ async function handleMeetingEnd(event: TriggerEvent): Promise<{ dispatched: bool
   })
 
   log.info("workflow dispatched", { runId: handle.id, meetingId })
+  return { dispatched: true, runId: handle.id }
+}
+
+async function handleCardCallback(event: TriggerEvent): Promise<{ dispatched: boolean; runId?: string }> {
+  const handle = await tasks.trigger<typeof cardCallbackFlow>("card-callback", event.payload)
+  log.info("card callback workflow dispatched", { runId: handle.id, eventId: event.eventId })
   return { dispatched: true, runId: handle.id }
 }
 

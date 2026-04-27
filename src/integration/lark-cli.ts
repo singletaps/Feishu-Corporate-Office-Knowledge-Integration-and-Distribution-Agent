@@ -1,16 +1,26 @@
-import { execFile } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { log } from "../evaluation/logger.js"
 import { FeishuAPIError } from "../shared/errors.js"
 
+const LARK_CLI = process.platform === "win32" ? "lark-cli.cmd" : "lark-cli"
+const EXEC_OPTIONS = { maxBuffer: 10 * 1024 * 1024, shell: process.platform === "win32" }
+
+function normalizeArgs(args: string[]): string[] {
+  if (process.platform !== "win32") return args
+  return args.map((arg) => {
+    if (!/[\s"]/u.test(arg)) return arg
+    return `"${arg.replace(/"/g, '\\"')}"`
+  })
+}
+
 export async function larkCli(args: string[]): Promise<unknown> {
-  const fullArgs = [...args, "--format", "json"]
-  log.info("lark-cli call", { args: fullArgs.join(" ") })
+  log.info("lark-cli call", { args: args.join(" ") })
 
   return new Promise((resolve, reject) => {
-    execFile("lark-cli", fullArgs, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(LARK_CLI, normalizeArgs(args), EXEC_OPTIONS, (error, stdout, stderr) => {
       if (error) {
-        log.error("lark-cli failed", { args: fullArgs.join(" "), stderr, code: error.code })
-        reject(new FeishuAPIError("lark-cli", fullArgs.join(" "), stderr || error.message))
+        log.error("lark-cli failed", { args: args.join(" "), stderr, code: error.code })
+        reject(new FeishuAPIError("lark-cli", args.join(" "), stderr || error.message))
         return
       }
 
@@ -25,7 +35,7 @@ export async function larkCli(args: string[]): Promise<unknown> {
       }
 
       const parsed = JSON.parse(trimmed)
-      log.debug("lark-cli response", { args: fullArgs.join(" "), responseKeys: Object.keys(parsed) })
+      log.debug("lark-cli response", { args: args.join(" "), responseKeys: Object.keys(parsed) })
       resolve(parsed)
     })
   })
@@ -35,7 +45,7 @@ export async function larkCliRaw(args: string[]): Promise<string> {
   log.info("lark-cli raw call", { args: args.join(" ") })
 
   return new Promise((resolve, reject) => {
-    execFile("lark-cli", args, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(LARK_CLI, normalizeArgs(args), EXEC_OPTIONS, (error, stdout, stderr) => {
       if (error) {
         log.error("lark-cli raw failed", { args: args.join(" "), stderr })
         reject(new FeishuAPIError("lark-cli", args.join(" "), stderr || error.message))
@@ -43,5 +53,40 @@ export async function larkCliRaw(args: string[]): Promise<string> {
       }
       resolve(stdout)
     })
+  })
+}
+
+export async function larkCliStdin(args: string[], stdin: string): Promise<unknown> {
+  log.info("lark-cli stdin call", { args: args.join(" "), stdinLength: stdin.length })
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(LARK_CLI, normalizeArgs(args), {
+      shell: process.platform === "win32",
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+
+    child.stdout.on("data", (data: Buffer) => { stdout += data.toString() })
+    child.stderr.on("data", (data: Buffer) => { stderr += data.toString() })
+    child.on("error", (error) => {
+      reject(new FeishuAPIError("lark-cli", args.join(" "), error.message))
+    })
+    child.on("close", (code) => {
+      if (code !== 0) {
+        log.error("lark-cli stdin failed", { args: args.join(" "), stderr, code })
+        reject(new FeishuAPIError("lark-cli", args.join(" "), stderr || `exit code ${code}`))
+        return
+      }
+
+      if (stderr) {
+        log.warn("lark-cli stdin stderr", { stderr: stderr.slice(0, 500) })
+      }
+
+      const trimmed = stdout.trim()
+      resolve(trimmed ? JSON.parse(trimmed) : null)
+    })
+
+    child.stdin.end(stdin)
   })
 }

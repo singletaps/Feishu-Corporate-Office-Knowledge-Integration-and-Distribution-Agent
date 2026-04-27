@@ -26,7 +26,13 @@ interface VcNotesResponse {
 
 export async function getMeetingDetail(meetingId: string) {
   log.info("fetching meeting detail", { meetingId })
-  const data = (await larkCli(["vc", "meeting", "get", "--meeting_id", meetingId])) as VcMeetingResponse
+  const data = (await larkCli([
+    "vc",
+    "meeting",
+    "get",
+    "--params",
+    JSON.stringify({ meeting_id: meetingId, with_participants: true }),
+  ])) as VcMeetingResponse
   const m = data?.meeting
   return {
     meetingId: m?.id ?? meetingId,

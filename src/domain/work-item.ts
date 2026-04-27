@@ -2,7 +2,7 @@ import { z } from "zod"
 import { callLLM } from "./llm.js"
 import { db } from "../shared/db.js"
 import { log } from "../evaluation/logger.js"
-import { ItemNotFoundError } from "../shared/errors.js"
+import { AppError, ItemNotFoundError } from "../shared/errors.js"
 import type {
   WorkItem, ExtractedWorkItem, FeishuUser,
   OriginChannel, ItemStatus, ChangedBy,
@@ -65,6 +65,7 @@ export async function reconcileAndSave(
   originChannel: OriginChannel,
   originContextId: string,
   participants: FeishuUser[],
+  options: { changedById?: string } = {},
 ): Promise<WorkItem[]> {
   log.info("reconciling work items", { count: extracted.length, originChannel, originContextId })
 
@@ -119,8 +120,8 @@ export async function reconcileAndSave(
       await db.execute(
         `INSERT INTO work_item_audit_log
            (work_item_id, change_type, to_value, reason, changed_by_type, changed_by_id)
-         VALUES ($1, 'create', $2, 'auto-extracted from meeting', 'workflow', 'post-meeting-extraction')`,
-        [created[0].id, item.itemType],
+         VALUES ($1, 'create', $2, 'auto-extracted from meeting', 'workflow', $3)`,
+        [created[0].id, item.itemType, options.changedById ?? "reconcile-and-save"],
       )
     }
   }
@@ -136,7 +137,7 @@ export async function reconcileAndSave(
 // ----- Status update -----
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
-  new: ["pending_review", "active"],
+  new: ["pending_review", "active", "closed"],
   pending_review: ["active", "closed"],
   active: ["blocked", "done"],
   blocked: ["active", "closed"],
@@ -154,7 +155,11 @@ export async function updateStatus(
 
   const allowed = VALID_TRANSITIONS[item.status] ?? []
   if (!allowed.includes(newStatus)) {
-    log.warn("invalid status transition", { workItemId, from: item.status, to: newStatus })
+    throw new AppError("Invalid WorkItem status transition", "INVALID_STATUS_TRANSITION", {
+      workItemId,
+      from: item.status,
+      to: newStatus,
+    })
   }
 
   log.info("updating work item status", { workItemId, from: item.status, to: newStatus })
@@ -237,6 +242,68 @@ export async function findOverdueAndBlocked(): Promise<{ overdue: WorkItem[]; bl
   return { overdue, blocked }
 }
 
+export async function listActiveItems(filters?: {
+  ownerUserId?: string
+  itemType?: string
+  limit?: number
+}): Promise<WorkItem[]> {
+  const conditions = ["deleted_at IS NULL", "status IN ('new', 'pending_review', 'active', 'blocked')"]
+  const params: unknown[] = []
+  let idx = 1
+
+  if (filters?.ownerUserId) {
+    conditions.push(`owner_user_id = $${idx++}`)
+    params.push(filters.ownerUserId)
+  }
+
+  if (filters?.itemType) {
+    conditions.push(`item_type = $${idx++}`)
+    params.push(filters.itemType)
+  }
+
+  const limit = filters?.limit ?? 200
+  params.push(limit)
+
+  return db.query<WorkItem>(
+    `SELECT * FROM work_items
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY COALESCE(due_at, created_at) ASC
+     LIMIT $${idx}`,
+    params,
+  )
+}
+
+export async function syncExternalTaskStatuses(statuses: Map<string, string>): Promise<WorkItem[]> {
+  const changed: WorkItem[] = []
+
+  for (const [taskId, externalStatus] of statuses.entries()) {
+    const binding = await db.queryOne<{ workItemId: string }>(
+      `SELECT work_item_id FROM task_bindings
+       WHERE binding_type = 'feishu_task' AND external_id = $1`,
+      [taskId],
+    )
+
+    if (!binding) continue
+
+    const item = await findById(binding.workItemId)
+    if (!item) continue
+
+    const nextStatus = mapFeishuTaskStatus(externalStatus, item.status)
+    if (nextStatus === item.status) continue
+
+    const updated = await updateStatus(
+      item.id,
+      nextStatus,
+      { type: "sync", id: `feishu_task:${taskId}` },
+      `synced from feishu task status: ${externalStatus}`,
+    )
+    changed.push(updated)
+  }
+
+  log.info("external task statuses synced", { changedCount: changed.length })
+  return changed
+}
+
 export async function listByOrigin(originContextId: string): Promise<WorkItem[]> {
   return db.query<WorkItem>(
     `SELECT * FROM work_items WHERE origin_context_id = $1 AND deleted_at IS NULL ORDER BY created_at`,
@@ -257,4 +324,11 @@ function resolveOwner(ownerName: string | null, participants: FeishuUser[]): str
 function generateDedupeKey(title: string, contextId: string): string {
   const normalized = title.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 80)
   return `${contextId}::${normalized}`
+}
+
+function mapFeishuTaskStatus(externalStatus: string, current: ItemStatus): ItemStatus {
+  if (externalStatus === "done" || externalStatus === "completed") return "done"
+  if (externalStatus === "deleted" || externalStatus === "closed") return "closed"
+  if (current === "new" || current === "pending_review") return "active"
+  return current
 }

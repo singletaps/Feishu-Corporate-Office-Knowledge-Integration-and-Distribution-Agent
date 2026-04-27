@@ -8,6 +8,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev:trigger": "trigger dev",
+    "dev:tools": "tsx src/agent-tools/server.ts",
+    "eval:report": "tsx scripts/generate-evaluation-report.ts",
+    "openclaw:apply-deepseek-config": "node .tmp-openclaw/apply-openclaw-deepseek-config.cjs",
+    "openclaw:gw-ws-probe": "tsx scripts/openclaw-gw-ws-probe.ts",
     "db:reset": "wsl docker exec feishu-postgres psql -U feishu -d feishu_agent -f /tmp/schema.sql"
   },
   "repository": {
@@ -23,18 +27,21 @@
   },
   "homepage": "https://github.com/singletaps/Feishu-Corporate-Office-Knowledge-Integration-and-Distribution-Agent#readme",
   "dependencies": {
+    "@noble/ed25519": "^3.1.0",
     "@trigger.dev/sdk": "4.4.4",
     "dotenv": "^17.4.2",
     "ioredis": "^5.10.1",
     "pg": "^8.20.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
+    "ws": "^8.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@trigger.dev/build": "4.4.4",
     "@types/node": "^22.15.3",
     "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
     "trigger.dev": "4.4.4"
   }
 }

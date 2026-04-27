@@ -3,6 +3,7 @@ import { db } from "./shared/db.js"
 import { redis } from "./shared/redis.js"
 import { log } from "./evaluation/logger.js"
 import { startEventListener } from "./trigger/event-listener.js"
+import { startAgentToolsServer } from "./agent-tools/server.js"
 
 async function main() {
   log.info("feishu agent starting", { logLevel: config.logLevel })
@@ -15,9 +16,10 @@ async function main() {
 
   log.info("all services healthy")
 
+  startAgentToolsServer()
   startEventListener()
 
-  log.info("feishu agent running — listening for events")
+  log.info("feishu agent running — listening for events and agent tool calls")
 }
 
 main().catch((err) => {

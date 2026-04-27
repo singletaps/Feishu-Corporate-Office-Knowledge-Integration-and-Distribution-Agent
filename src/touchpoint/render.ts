@@ -176,3 +176,38 @@ export function renderPreMeetingCard(brief: KnowledgeArtifact): Record<string, u
     ],
   }
 }
+
+export function renderWeeklyInsightCard(insight: KnowledgeArtifact): Record<string, unknown> {
+  const payload = insight.contentPayload ?? {}
+  const counts = (payload.counts as Record<string, number>) ?? {}
+  const risks = (payload.riskItems as Array<{ title: string; status: string; ownerUserId?: string }>) ?? []
+  const overdue = (payload.overdueItems as Array<{ title: string; status: string; ownerUserId?: string }>) ?? []
+
+  const riskLines = risks.length > 0
+    ? risks.map((item) => `- ${item.title}（${item.status}）`).join("\n")
+    : "- 暂无高风险事项"
+
+  const overdueLines = overdue.length > 0
+    ? overdue.map((item) => `- ${item.title}（${item.status}）`).join("\n")
+    : "- 暂无超期事项"
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: "plain_text", content: insight.title ?? "团队重点事项周洞察" },
+      template: "blue",
+    },
+    elements: [
+      { tag: "markdown", content: insight.summary ?? "暂无摘要" },
+      { tag: "hr" },
+      {
+        tag: "markdown",
+        content: `**状态统计**\n- 进行中：${counts.active ?? 0}\n- 待确认：${counts.pending_review ?? 0}\n- 阻塞：${counts.blocked ?? 0}\n- 已完成：${counts.done ?? 0}`,
+      },
+      { tag: "hr" },
+      { tag: "markdown", content: `**风险/阻塞事项**\n${riskLines}` },
+      { tag: "hr" },
+      { tag: "markdown", content: `**超期事项**\n${overdueLines}` },
+    ],
+  }
+}

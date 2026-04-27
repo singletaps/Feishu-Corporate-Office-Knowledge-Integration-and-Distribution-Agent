@@ -1,0 +1,83 @@
+{
+  "name": "feishu-workitem-agent-tools",
+  "description": "FeishuAgent tools for OpenClaw: work item hub, risk inspection, meeting extraction, and Base synchronization.",
+  "baseUrl": "http://172.20.112.1:8787",
+  "auth": {
+    "type": "bearer",
+    "header": "Authorization",
+    "description": "Use Authorization: Bearer <AGENT_TOOLS_TOKEN>"
+  },
+  "tools": [
+    {
+      "name": "extractMeetingItems",
+      "description": "Extract action items, decisions, risks, and blockers from a Feishu meeting and sync them into the WorkItem hub and Base.",
+      "method": "POST",
+      "path": "/tools/extractMeetingItems",
+      "parameters": {
+        "type": "object",
+        "required": ["meetingId"],
+        "properties": {
+          "meetingId": { "type": "string", "description": "Feishu meeting ID." },
+          "chatId": { "type": "string", "description": "Optional chat ID for confirmation card." },
+          "sendCard": { "type": "boolean", "default": false },
+          "createTasks": { "type": "boolean", "default": true }
+        }
+      }
+    },
+    {
+      "name": "syncWorkItemHub",
+      "description": "Synchronize WorkItems, Feishu task statuses, and the Feishu Base work item hub.",
+      "method": "POST",
+      "path": "/tools/syncWorkItemHub",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "number", "default": 200, "maximum": 200 }
+        }
+      }
+    },
+    {
+      "name": "inspectRisks",
+      "description": "Inspect overdue or blocked WorkItems and optionally request risk alerts.",
+      "method": "POST",
+      "path": "/tools/inspectRisks",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "sendAlerts": { "type": "boolean", "default": false }
+        }
+      }
+    },
+    {
+      "name": "queryWorkItems",
+      "description": "Query WorkItems by owner, status, type, or source.",
+      "method": "POST",
+      "path": "/tools/queryWorkItems",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ownerUserId": { "type": "string" },
+          "status": {
+            "type": "array",
+            "items": { "type": "string", "enum": ["new", "pending_review", "active", "blocked", "done", "closed"] }
+          },
+          "itemType": { "type": "string", "enum": ["todo", "decision", "risk", "blocker"] },
+          "originChannel": { "type": "string", "enum": ["meeting", "minutes", "doc", "wiki", "im", "task", "mail"] },
+          "limit": { "type": "number", "default": 50, "maximum": 200 }
+        }
+      }
+    },
+    {
+      "name": "summarizeWorkItemHub",
+      "description": "Summarize current active WorkItems and top risks for a concise user-facing answer.",
+      "method": "POST",
+      "path": "/tools/summarizeWorkItemHub",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "limit": { "type": "number", "default": 200, "maximum": 200 }
+        }
+      }
+    }
+  ]
+}

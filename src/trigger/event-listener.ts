@@ -4,10 +4,12 @@ import { log } from "../evaluation/logger.js"
 import { normalizeFeishuEvent } from "./normalizer.js"
 import { dispatchToWorkflow } from "./dispatcher.js"
 
+const LARK_CLI = process.platform === "win32" ? "lark-cli.cmd" : "lark-cli"
+
 export function startEventListener(): void {
   log.info("starting lark-event listener")
 
-  const child = spawn("lark-cli", [
+  const child = spawn(LARK_CLI, [
     "event", "+subscribe",
     "--as", "bot",
     "--compact",

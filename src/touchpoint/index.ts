@@ -1,2 +1,2 @@
-export { sendPostMeetingConfirmCard, sendRiskAlertCards, sendPreMeetingCard } from "./card.js"
-export { renderPostMeetingCard, renderRiskAlertCard, renderPreMeetingCard } from "./render.js"
+export { sendPostMeetingConfirmCard, sendRiskAlertCards, sendPreMeetingCard, sendWeeklyInsightCard } from "./card.js"
+export { renderPostMeetingCard, renderRiskAlertCard, renderPreMeetingCard, renderWeeklyInsightCard } from "./render.js"

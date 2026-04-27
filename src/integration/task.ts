@@ -12,7 +12,7 @@ export async function createFeishuTask(params: CreateTaskParams): Promise<Feishu
   }
 
   if (params.ownerOpenId) {
-    args.push("--members", params.ownerOpenId)
+    args.push("--assignee", params.ownerOpenId)
   }
 
   if (params.dueAt) {
@@ -23,10 +23,16 @@ export async function createFeishuTask(params: CreateTaskParams): Promise<Feishu
     args.push("--origin-href", params.sourceLink)
   }
 
-  const data = (await larkCli(args)) as { task_id?: string; url?: string } | null
+  const data = (await larkCli(args)) as {
+    task_id?: string
+    guid?: string
+    url?: string
+    task?: { guid?: string; url?: string }
+    data?: { guid?: string; url?: string; task?: { guid?: string; url?: string } }
+  } | null
 
-  const taskId = data?.task_id ?? ""
-  const url = data?.url ?? ""
+  const taskId = data?.task_id ?? data?.guid ?? data?.task?.guid ?? data?.data?.task?.guid ?? data?.data?.guid ?? ""
+  const url = data?.url ?? data?.task?.url ?? data?.data?.task?.url ?? data?.data?.url ?? ""
   log.info("feishu task created", { taskId, url })
 
   return { taskId, url }
