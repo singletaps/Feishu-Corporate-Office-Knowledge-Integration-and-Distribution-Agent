@@ -1,25 +1,34 @@
 import { randomUUID } from "node:crypto"
 import { writeFileSync, unlinkSync } from "node:fs"
-import { config } from "../shared/config.js"
 import { db } from "../shared/db.js"
 import { log } from "../evaluation/logger.js"
 import { larkCli } from "./lark-cli.js"
+import { ensurePrimaryProjection, resolveHubTable, updateProjectionRecord } from "../application/hub-service.js"
 import type { WorkItem } from "../shared/types.js"
 
 export interface BaseRecordResult {
   recordId: string
   url: string | null
+  hubId: string
+  projectionId: string
 }
 
-export async function upsertWorkItemRecord(item: WorkItem): Promise<BaseRecordResult> {
-  const bindingRecordId = await findBitableRecordId(item.id)
-  const baseRecordId = bindingRecordId ?? await findRecordIdByWorkItemId(item.id)
+const ensuredProjectionFields = new Set<string>()
+
+export async function upsertWorkItemRecord(item: WorkItem, hubId?: string): Promise<BaseRecordResult> {
+  const hubTable = await resolveHubTable(hubId)
+  await ensureProjectionFields(hubTable)
+  const projectionId = await findProjectionId(item.id, hubTable.hubId)
+    ?? await ensurePrimaryProjection(item.id, hubTable.hubId)
+  const bindingRecordId = await findBitableRecordId(item.id, hubTable.hubId)
+  const baseRecordId = bindingRecordId ?? await findRecordIdByWorkItemId(item.id, hubTable)
   const existingRecordId = baseRecordId
   const linkedTaskId = await findFeishuTaskId(item.id)
-  const fields = await toBaseFields(item, linkedTaskId)
+  const fields = await toBaseFields(item, linkedTaskId, hubTable.hubId)
 
   log.info("upserting work item to base", {
     workItemId: item.id,
+    hubId: hubTable.hubId,
     existingRecordId,
     title: item.title,
   })
@@ -28,8 +37,8 @@ export async function upsertWorkItemRecord(item: WorkItem): Promise<BaseRecordRe
   const args = [
     "base", "+record-upsert",
     "--as", "user",
-    "--base-token", config.feishu.baseToken,
-    "--table-id", config.feishu.baseTableId,
+    "--base-token", hubTable.baseToken,
+    "--table-id", hubTable.tableId,
     "--json", jsonFile,
   ]
 
@@ -50,16 +59,16 @@ export async function upsertWorkItemRecord(item: WorkItem): Promise<BaseRecordRe
   const recordId = record?.record_id
     ?? record?.id
     ?? existingRecordId
-    ?? await findRecordIdByWorkItemId(item.id)
+    ?? await findRecordIdByWorkItemId(item.id, hubTable)
     ?? ""
 
   if (recordId && !bindingRecordId) {
     await db.execute(
       `INSERT INTO task_bindings
-         (work_item_id, binding_type, external_id, is_primary, binding_role, sync_status, last_sync_at)
-       VALUES ($1, 'bitable_record', $2, false, 'projection', 'synced', now())
+         (work_item_id, hub_id, projection_id, binding_type, external_id, is_primary, binding_role, sync_status, last_sync_at)
+       VALUES ($1, $2, $3, 'bitable_record', $4, false, 'projection', 'synced', now())
        ON CONFLICT DO NOTHING`,
-      [item.id, recordId],
+      [item.id, hubTable.hubId, projectionId, recordId],
     )
   }
 
@@ -67,21 +76,28 @@ export async function upsertWorkItemRecord(item: WorkItem): Promise<BaseRecordRe
     await db.execute(
       `UPDATE task_bindings
        SET sync_status = 'synced', last_sync_at = now(), last_sync_error = NULL, updated_at = now()
-       WHERE work_item_id = $1 AND binding_type = 'bitable_record' AND external_id = $2`,
-      [item.id, recordId],
+       WHERE work_item_id = $1 AND hub_id = $2 AND binding_type = 'bitable_record' AND external_id = $3`,
+      [item.id, hubTable.hubId, recordId],
     )
   }
 
-  log.info("base record upserted", { workItemId: item.id, recordId })
-  return { recordId, url: record?.url ?? null }
+  if (recordId) {
+    await updateProjectionRecord(projectionId, recordId)
+  }
+
+  log.info("base record upserted", { workItemId: item.id, hubId: hubTable.hubId, projectionId, recordId })
+  return { recordId, url: record?.url ?? null, hubId: hubTable.hubId, projectionId }
 }
 
-async function findRecordIdByWorkItemId(workItemId: string): Promise<string | null> {
+async function findRecordIdByWorkItemId(
+  workItemId: string,
+  hubTable: { baseToken: string; tableId: string },
+): Promise<string | null> {
   const response = await larkCli([
     "base", "+record-list",
     "--as", "user",
-    "--base-token", config.feishu.baseToken,
-    "--table-id", config.feishu.baseTableId,
+    "--base-token", hubTable.baseToken,
+    "--table-id", hubTable.tableId,
     "--limit", "200",
   ]) as {
     data?: {
@@ -107,12 +123,12 @@ async function findRecordIdByWorkItemId(workItemId: string): Promise<string | nu
   return null
 }
 
-export async function projectWorkItemsToBase(items: WorkItem[]): Promise<BaseRecordResult[]> {
-  log.info("projecting work items to base", { count: items.length })
+export async function projectWorkItemsToBase(items: WorkItem[], options: { hubId?: string } = {}): Promise<BaseRecordResult[]> {
+  log.info("projecting work items to base", { count: items.length, hubId: options.hubId })
   const results: BaseRecordResult[] = []
 
   for (const item of items) {
-    const result = await upsertWorkItemRecord(item)
+    const result = await upsertWorkItemRecord(item, options.hubId)
     results.push(result)
   }
 
@@ -120,14 +136,27 @@ export async function projectWorkItemsToBase(items: WorkItem[]): Promise<BaseRec
   return results
 }
 
-async function findBitableRecordId(workItemId: string): Promise<string | null> {
+async function findBitableRecordId(workItemId: string, hubId: string): Promise<string | null> {
   const binding = await db.queryOne<{ externalId: string }>(
     `SELECT external_id FROM task_bindings
-     WHERE work_item_id = $1 AND binding_type = 'bitable_record'
+     WHERE work_item_id = $1 AND hub_id = $2 AND binding_type = 'bitable_record'
      ORDER BY created_at DESC LIMIT 1`,
-    [workItemId],
+    [workItemId, hubId],
   )
   return binding?.externalId ?? null
+}
+
+async function findProjectionId(workItemId: string, hubId: string): Promise<string | null> {
+  const projection = await db.queryOne<{ id: string }>(
+    `SELECT id FROM work_item_hub_projections
+     WHERE work_item_id = $1
+       AND hub_id = $2
+       AND sync_status <> 'removed'
+     ORDER BY CASE projection_role WHEN 'primary' THEN 1 ELSE 2 END, created_at ASC
+     LIMIT 1`,
+    [workItemId, hubId],
+  )
+  return projection?.id ?? null
 }
 
 async function findFeishuTaskId(workItemId: string): Promise<string | null> {
@@ -140,7 +169,7 @@ async function findFeishuTaskId(workItemId: string): Promise<string | null> {
   return binding?.externalId ?? null
 }
 
-async function toBaseFields(item: WorkItem, linkedTaskId: string | null): Promise<Record<string, unknown>> {
+async function toBaseFields(item: WorkItem, linkedTaskId: string | null, hubId: string): Promise<Record<string, unknown>> {
   const evidence = await findSourceEvidence(item.id)
   return {
     "事项标题": item.title,
@@ -157,6 +186,7 @@ async function toBaseFields(item: WorkItem, linkedTaskId: string | null): Promis
     "关联背景链接": evidence.primaryUrl,
     "飞书任务ID": linkedTaskId,
     "WorkItem ID": item.id,
+    "Hub ID": hubId,
   }
 }
 
@@ -220,5 +250,35 @@ function writeBaseJsonFile(fields: Record<string, unknown>): string {
   const filename = `./base-record-${randomUUID()}.json`
   writeFileSync(filename, JSON.stringify(fields), "utf-8")
   return `@${filename}`
+}
+
+async function ensureProjectionFields(hubTable: { baseToken: string; tableId: string }): Promise<void> {
+  const cacheKey = `${hubTable.baseToken}:${hubTable.tableId}`
+  if (ensuredProjectionFields.has(cacheKey)) return
+
+  const response = await larkCli([
+    "base", "+field-list",
+    "--as", "user",
+    "--base-token", hubTable.baseToken,
+    "--table-id", hubTable.tableId,
+    "--limit", "200",
+  ]) as { data?: { fields?: Array<{ name?: string; field_name?: string }>; items?: Array<{ name?: string; field_name?: string }> } } | null
+
+  const fields = response?.data?.fields ?? response?.data?.items ?? []
+  const existingNames = new Set(fields.map((field) => field.name ?? field.field_name).filter(Boolean))
+  const requiredTextFields = ["Hub ID"]
+
+  for (const fieldName of requiredTextFields) {
+    if (existingNames.has(fieldName)) continue
+    await larkCli([
+      "base", "+field-create",
+      "--as", "user",
+      "--base-token", hubTable.baseToken,
+      "--table-id", hubTable.tableId,
+      "--json", JSON.stringify({ type: "text", name: fieldName, style: { type: "plain" } }),
+    ])
+  }
+
+  ensuredProjectionFields.add(cacheKey)
 }
 

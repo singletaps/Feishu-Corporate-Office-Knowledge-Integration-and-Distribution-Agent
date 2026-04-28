@@ -97,7 +97,7 @@ async function handleCardCallbackRequest(req: IncomingMessage, res: ServerRespon
       sendJson(res, 200, {
         toast: {
           type: "error",
-          content: error.message,
+          content: `${error.message}\n错误码：${error.code}`,
         },
       })
       return
@@ -106,7 +106,7 @@ async function handleCardCallbackRequest(req: IncomingMessage, res: ServerRespon
     sendJson(res, 200, {
       toast: {
         type: "error",
-        content: `卡片回调失败：${err.message}`,
+        content: `卡片回调失败：${err.message}\n错误码：CARD_CALLBACK_FAILED`,
       },
     })
   }

@@ -13,6 +13,7 @@ import {
   syncExternalTaskStatuses,
   findOverdueAndBlocked,
 } from "../domain/work-item.js"
+import { applyHubAssignment, collectSourceContextForAssignment } from "./hub-assignment-service.js"
 import type { WorkItem } from "../shared/types.js"
 
 export interface ExtractMeetingItemsOptions {
@@ -89,8 +90,30 @@ export async function extractMeetingItemsFlow(
 
   const tasksCreated = createTasks ? await createTasksForItems(saved, detail.title) : []
 
-  if (projectToBase && saved.length > 0) {
-    await projectWorkItemsToBase(saved)
+  for (const item of saved) {
+    const evidence = await collectSourceContextForAssignment({
+      originChannel: "meeting",
+      originContextId: meetingId,
+      title: detail.title,
+      contentText: minutes.transcript,
+      chatId,
+      chatType: chatId ? "group" : "unknown",
+      ownerUserId: item.ownerUserId ?? undefined,
+      participantOpenIds: participants.map((participant) => participant.openId),
+      explicitHubId: undefined,
+      changedById: options.changedById ?? "extract-meeting-items",
+    })
+    const assignment = await applyHubAssignment({
+      workItem: item,
+      evidence,
+      changedById: options.changedById ?? "extract-meeting-items",
+    })
+
+    if (projectToBase) {
+      for (const hubId of assignment.appliedHubIds) {
+        await projectWorkItemsToBase([item], { hubId })
+      }
+    }
   }
 
   const cardMessageId = chatId && sendCard && saved.length > 0
@@ -136,15 +159,13 @@ export async function syncWorkItemHubFlow(limit = 200): Promise<SyncWorkItemHubR
   const changed = await syncExternalTaskStatuses(statuses)
   const itemsToProject = changed.length > 0 ? changed : activeItems
 
-  if (itemsToProject.length > 0) {
-    await projectWorkItemsToBase(itemsToProject)
-  }
+  const projectedCount = await projectItemsToAssignedHubs(itemsToProject)
 
   return {
     activeCount: activeItems.length,
     taskBindingCount: taskIds.length,
     changedCount: changed.length,
-    projectedCount: itemsToProject.length,
+    projectedCount,
     baseUrl: config.feishu.baseUrl,
   }
 }
@@ -153,9 +174,7 @@ export async function inspectRisksFlow(sendAlerts = false): Promise<InspectRisks
   const { overdue, blocked } = await findOverdueAndBlocked()
   const riskyItems = dedupeItems([...overdue, ...blocked])
 
-  if (riskyItems.length > 0) {
-    await projectWorkItemsToBase(riskyItems)
-  }
+  const projectedCount = await projectItemsToAssignedHubs(riskyItems)
 
   const owners = groupByOwner(riskyItems)
   const messageIds = sendAlerts && owners.length > 0
@@ -177,7 +196,7 @@ export async function inspectRisksFlow(sendAlerts = false): Promise<InspectRisks
   return {
     overdueCount: overdue.length,
     blockedCount: blocked.length,
-    projectedCount: riskyItems.length,
+    projectedCount,
     alertedOwnerCount: messageIds.length,
     baseUrl: config.feishu.baseUrl,
     items: riskyItems,
@@ -243,4 +262,33 @@ function dedupeItems(items: WorkItem[]): WorkItem[] {
     byId.set(item.id, item)
   }
   return Array.from(byId.values())
+}
+
+async function projectItemsToAssignedHubs(items: WorkItem[]): Promise<number> {
+  let projectedCount = 0
+  for (const item of items) {
+    const hubIds = await findAssignedHubIds(item.id)
+    if (hubIds.length === 0) {
+      await projectWorkItemsToBase([item])
+      projectedCount += 1
+      continue
+    }
+    for (const hubId of hubIds) {
+      await projectWorkItemsToBase([item], { hubId })
+      projectedCount += 1
+    }
+  }
+  return projectedCount
+}
+
+async function findAssignedHubIds(workItemId: string): Promise<string[]> {
+  const rows = await db.query<{ hubId: string }>(
+    `SELECT hub_id
+     FROM work_item_hub_projections
+     WHERE work_item_id = $1
+       AND sync_status <> 'removed'
+     ORDER BY CASE projection_role WHEN 'primary' THEN 1 ELSE 2 END, created_at ASC`,
+    [workItemId],
+  )
+  return rows.map((row) => row.hubId)
 }

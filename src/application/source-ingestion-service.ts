@@ -4,6 +4,11 @@ import { log } from "../evaluation/logger.js"
 import { projectWorkItemsToBase } from "../integration/base.js"
 import { extractWorkItems, listActiveItems, reconcileAndSave } from "../domain/work-item.js"
 import { generatePreMeetingBrief, generateTaskDigest } from "../domain/artifact.js"
+import {
+  applyHubAssignment,
+  collectSourceContextForAssignment,
+  type ApplyHubAssignmentResult,
+} from "./hub-assignment-service.js"
 import type { FeishuUser, KnowledgeArtifact, OriginChannel, WorkItem } from "../shared/types.js"
 
 export interface SourceParticipantInput {
@@ -19,8 +24,17 @@ export interface IngestSourceItemsOptions {
   contentText: string
   ownerUserId?: string
   sourceUrl?: string
+  chatId?: string
+  chatType?: "group" | "p2p" | "unknown"
+  actorOpenId?: string
+  mentionedUserIds?: string[]
+  docToken?: string
+  wikiSpaceId?: string
+  folderToken?: string
+  calendarEventId?: string
   participants?: SourceParticipantInput[]
   projectToBase?: boolean
+  hubId?: string
   changedById?: string
 }
 
@@ -31,6 +45,7 @@ export interface IngestSourceItemsResult {
   extractedCount: number
   savedCount: number
   projectedCount: number
+  assignmentResults: ApplyHubAssignmentResult[]
   baseUrl: string
   items: WorkItem[]
 }
@@ -88,8 +103,42 @@ export async function ingestSourceItemsFlow(
     },
   )
 
-  if (projectToBase && saved.length > 0) {
-    await projectWorkItemsToBase(saved)
+  const assignmentResults: ApplyHubAssignmentResult[] = []
+  let projectedCount = 0
+
+  for (const item of saved) {
+    const evidence = await collectSourceContextForAssignment({
+      originChannel: options.originChannel,
+      originContextId: options.originContextId,
+      title: options.title ?? item.title,
+      contentText: options.contentText,
+      sourceUrl: options.sourceUrl,
+      chatId: options.chatId,
+      chatType: options.chatType,
+      actorOpenId: options.actorOpenId ?? options.ownerUserId,
+      ownerUserId: item.ownerUserId ?? options.ownerUserId,
+      participantOpenIds: participants.map((participant) => participant.openId),
+      mentionedUserIds: options.mentionedUserIds,
+      docToken: options.docToken,
+      wikiSpaceId: options.wikiSpaceId,
+      folderToken: options.folderToken,
+      calendarEventId: options.calendarEventId,
+      explicitHubId: options.hubId,
+      changedById: options.changedById,
+    })
+    const assignment = await applyHubAssignment({
+      workItem: item,
+      evidence,
+      changedById: options.changedById ?? `source-ingestion:${options.originChannel}`,
+    })
+    assignmentResults.push(assignment)
+
+    if (projectToBase && assignment.appliedHubIds.length > 0) {
+      for (const hubId of assignment.appliedHubIds) {
+        await projectWorkItemsToBase([item], { hubId })
+        projectedCount += 1
+      }
+    }
   }
 
   return {
@@ -98,7 +147,8 @@ export async function ingestSourceItemsFlow(
     assetId,
     extractedCount: extracted.length,
     savedCount: saved.length,
-    projectedCount: projectToBase ? saved.length : 0,
+    projectedCount,
+    assignmentResults,
     baseUrl: config.feishu.baseUrl,
     items: saved,
   }

@@ -1,9 +1,15 @@
 import { tasks } from "@trigger.dev/sdk"
 import { redis } from "../shared/redis.js"
 import { log } from "../evaluation/logger.js"
+import { AppError } from "../shared/errors.js"
 import type { TriggerEvent } from "../shared/types.js"
+import { callAgent } from "../domain/openclaw-client.js"
+import { sendCardToChat, sendTextToChat } from "../integration/message.js"
+import { bindHubSession, findBoundHubForChat, resolveHubForChat } from "../application/hub-service.js"
+import { executeHubCommand } from "../application/hub-command-service.js"
+import { handleCardCallback as processCardCallback } from "../application/card-callback-service.js"
+import { mapFeishuEventToInboundRoute } from "./feishu-ingestion-adapter.js"
 import type { postMeetingExtraction } from "../workflow/post-meeting.js"
-import type { cardCallbackFlow } from "../workflow/card-callback.js"
 import type { sourceIngestion } from "../workflow/source-ingestion.js"
 import type { preMeetingBrief } from "../workflow/pre-meeting.js"
 
@@ -92,50 +98,141 @@ async function handleCardCallback(event: TriggerEvent): Promise<{ dispatched: bo
   const payload = event.payload.event && typeof event.payload.event === "object"
     ? event.payload
     : { event: event.payload }
-  const handle = await tasks.trigger<typeof cardCallbackFlow>("card-callback", payload)
-  log.info("card callback workflow dispatched", { runId: handle.id, eventId: event.eventId })
-  return { dispatched: true, runId: handle.id }
+  try {
+    const result = await processCardCallback(payload)
+    log.info("card callback handled", { eventId: event.eventId, ...result })
+    return { dispatched: true }
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error))
+    const code = error instanceof AppError ? error.code : "CARD_CALLBACK_FAILED"
+    const context = event.payload as { context?: { open_chat_id?: string }; event?: { context?: { open_chat_id?: string } } }
+    const chatId = context.event?.context?.open_chat_id ?? context.context?.open_chat_id
+    log.error("card callback failed", {
+      eventId: event.eventId,
+      error: err.message,
+      code,
+      context: error instanceof AppError ? error.context : undefined,
+    })
+    if (chatId) {
+      await sendTextToChat(chatId, `卡片回调失败：${err.message}\n错误码：${code}`)
+    }
+    return { dispatched: true }
+  }
 }
 
 async function handleSourceIngestionEvent(event: TriggerEvent): Promise<{ dispatched: boolean; runId?: string }> {
-  const payload = event.payload
-  const originChannel = inferOriginChannel(event.eventType, payload)
-  const originContextId = extractString(payload, [
-    "originContextId",
-    "source_id",
-    "message_id",
-    "doc_token",
-    "wiki_token",
-    "task_id",
-    "mail_id",
-    "id",
-  ])
-  const contentText = extractString(payload, ["contentText", "content_text", "text", "content", "summary", "subject"])
+  const route = mapFeishuEventToInboundRoute(event)
 
-  if (!originChannel || !originContextId || !contentText) {
-    log.warn("source ingestion event missing required content, skipping", {
+  if (route.kind === "ignore") {
+    log.info("inbound event ignored", {
       eventId: event.eventId,
       eventType: event.eventType,
-      hasOriginContextId: Boolean(originContextId),
-      hasContentText: Boolean(contentText),
+      reason: route.reason,
     })
     return { dispatched: false }
   }
 
+  if (route.kind === "pending_pull") {
+    log.warn("inbound event requires follow-up pull before ingestion", {
+      eventId: event.eventId,
+      eventType: route.eventType,
+      originChannel: route.originChannel,
+      originContextId: route.originContextId,
+      reason: route.reason,
+    })
+    return { dispatched: false }
+  }
+
+  if (route.kind === "help") {
+    await sendTextToChat(route.chatId, buildInboundHelpText(route.actorOpenId))
+    log.info("inbound help message handled", { eventId: event.eventId, chatId: route.chatId })
+    return { dispatched: true }
+  }
+
+  if (route.kind === "agent_question") {
+    const reply = await callAgent([
+      {
+        role: "system",
+        content: [
+          "你是 FeishuAgent 的方向 D 事项中枢助手。",
+          "优先围绕当前群的事项、风险、阻塞、负责人和推进表进行回答。",
+          "如需执行写操作，应通过已注册 agent-tools，并返回清晰的人类可读结果。",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          `actorOpenId: ${route.actorOpenId ?? "unknown"}`,
+          `chatId: ${route.chatId}`,
+          `messageId: ${route.messageId}`,
+          `question: ${route.question}`,
+        ].join("\n"),
+      },
+    ])
+    await sendTextToChat(route.chatId, reply.content)
+    log.info("inbound agent question handled", { eventId: event.eventId, chatId: route.chatId })
+    return { dispatched: true }
+  }
+
+  if (route.kind === "hub_command") {
+    if (route.command === "execute" && route.hubCommand) {
+      const hub = await resolveInboundHub(route.chatId, route.actorOpenId)
+      if (!hub) return { dispatched: true }
+      const reply = await executeHubCommandWithReply(route.chatId, {
+        hubId: hub.id,
+        actorOpenId: route.actorOpenId,
+        command: route.hubCommand,
+      })
+      if (reply.kind === "card") {
+        try {
+          await sendCardToChat(route.chatId, reply.card)
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error))
+          const code = error instanceof AppError ? error.code : "SEND_CARD_FAILED"
+          log.error("hub command card send failed", {
+            chatId: route.chatId,
+            hubId: hub.id,
+            command: route.hubCommand.command,
+            error: err.message,
+            code,
+          })
+          await sendTextToChat(route.chatId, `卡片发送失败：${err.message}\n错误码：${code}`)
+        }
+      } else {
+        await sendTextToChat(route.chatId, reply.text)
+      }
+      return { dispatched: true }
+    }
+    if (route.command === "select_hub" && route.hubId && route.actorOpenId) {
+      await bindHubSession(route.chatId, route.actorOpenId, route.hubId)
+      await sendTextToChat(route.chatId, `已选择当前 Hub：${route.hubId}`)
+      return { dispatched: true }
+    }
+    const hub = await resolveHubForChat(route.chatId, route.actorOpenId)
+    await sendTextToChat(route.chatId, [
+      `当前 Hub：${hub.name}`,
+      `Hub ID：${hub.id}`,
+      `类型：${hub.hubType}`,
+      "",
+      buildInboundHelpText(route.actorOpenId),
+    ].join("\n"))
+    return { dispatched: true }
+  }
+
+  const hub = route.chatId ? await findBoundHubForChat(route.chatId) : null
   const handle = await tasks.trigger<typeof sourceIngestion>("source-ingestion", {
-    originChannel,
-    originContextId,
-    title: extractString(payload, ["title", "name", "subject"]) || undefined,
-    contentText,
-    ownerUserId: extractString(payload, ["ownerUserId", "owner_user_id", "sender_id"]) || undefined,
-    sourceUrl: extractString(payload, ["sourceUrl", "source_url", "url"]) || undefined,
-    projectToBase: true,
+    ...route.payload,
+    chatId: route.chatId,
+    actorOpenId: route.actorOpenId,
+    hubId: hub?.id,
   })
 
   log.info("source ingestion workflow dispatched", {
     runId: handle.id,
-    originChannel,
-    originContextId,
+    originChannel: route.payload.originChannel,
+    originContextId: route.payload.originContextId,
+    chatId: route.chatId,
+    hubId: hub?.id,
   })
   return { dispatched: true, runId: handle.id }
 }
@@ -149,34 +246,67 @@ async function markProcessed(key: string): Promise<void> {
   await redis.setex(`idemp:${key}`, IDEMPOTENCY_TTL, "1")
 }
 
-function inferOriginChannel(eventType: string, payload: Record<string, unknown>) {
-  const explicit = payload.originChannel ?? payload.origin_channel
-  if (isKnownOriginChannel(explicit)) return explicit
-  if (eventType.includes("im") || eventType.includes("message")) return "im"
-  if (eventType.includes("wiki")) return "wiki"
-  if (eventType.includes("doc")) return "doc"
-  if (eventType.includes("task")) return "task"
-  if (eventType.includes("mail")) return "mail"
-  return null
+function buildInboundHelpText(actorOpenId?: string): string {
+  return [
+    "FeishuAgent 事项中枢可用操作：",
+    "- /help：查看当前帮助。",
+    "- /list：查看当前 Hub 待办。",
+      "- /all：生成当前 Hub 全部 WorkItem 电子表格。",
+    "- /add <标题>：新增待办。",
+    "- /update <WorkItem ID> <新标题>：修改待办标题。",
+    "- /delete <WorkItem ID>：删除待办。",
+    "- /invite <open_id> [role]：邀请成员，role 可选 member/admin/editor/viewer。",
+    "- /remove-member <open_id>：移除成员。",
+    "- @机器人 总结当前阻塞事项：进入 OpenClaw 问询与工具编排。",
+    "- /hub：查看当前 Hub。",
+    "- /select-hub <hubId>：在多 Hub 群里短期选择当前 Hub。",
+    "- 在群消息中包含待办、任务、风险、阻塞、负责人等关键词：作为事项来源进入摄入流程。",
+    "",
+    `当前用户：${actorOpenId ?? "未知"}`,
+    "当前 Hub：首期使用默认 Hub；多 Hub 解析与权限将在下一阶段接入。",
+  ].join("\n")
 }
 
-function isKnownOriginChannel(value: unknown): value is "meeting" | "minutes" | "doc" | "wiki" | "im" | "task" | "mail" {
-  return typeof value === "string"
-    && ["meeting", "minutes", "doc", "wiki", "im", "task", "mail"].includes(value)
+async function executeHubCommandWithReply(
+  chatId: string,
+  input: Parameters<typeof executeHubCommand>[0],
+): Promise<Awaited<ReturnType<typeof executeHubCommand>>> {
+  try {
+    return await executeHubCommand(input)
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error))
+    log.error("hub command failed", {
+      chatId,
+      hubId: input.hubId,
+      command: input.command.command,
+      error: err.message,
+      code: error instanceof AppError ? error.code : undefined,
+    })
+    if (error instanceof AppError) {
+      return { kind: "text", text: `操作失败：${error.message}\n错误码：${error.code}` }
+    }
+    return { kind: "text", text: `操作失败：${err.message}` }
+  }
 }
 
-function extractString(payload: Record<string, unknown>, keys: string[]): string {
-  for (const key of keys) {
-    const value = payload[key]
-    if (typeof value === "string" && value.trim()) return value.trim()
+async function resolveInboundHub(chatId: string, actorOpenId?: string) {
+  try {
+    return await resolveHubForChat(chatId, actorOpenId)
+  } catch (error) {
+    if (error instanceof AppError && error.code === "HUB_AMBIGUOUS") {
+      const candidates = Array.isArray(error.context?.candidates) ? error.context.candidates : []
+      const lines = candidates.map((candidate) => {
+        const item = candidate as { id?: string; name?: string; hubType?: string }
+        return `- ${item.name ?? "未命名 Hub"} (${item.hubType ?? "unknown"}): ${item.id}`
+      })
+      await sendTextToChat(chatId, [
+        "当前群绑定了多个 Hub，请先选择后再操作：",
+        ...lines,
+        "",
+        "用法：/select-hub <hubId>",
+      ].join("\n"))
+      return null
+    }
+    throw error
   }
-  const nestedEvent = payload.event
-  if (nestedEvent && typeof nestedEvent === "object") {
-    return extractString(nestedEvent as Record<string, unknown>, keys)
-  }
-  const message = payload.message
-  if (message && typeof message === "object") {
-    return extractString(message as Record<string, unknown>, keys)
-  }
-  return ""
 }

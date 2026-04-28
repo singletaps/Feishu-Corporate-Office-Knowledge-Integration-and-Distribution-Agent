@@ -10,7 +10,16 @@ interface SourceIngestionPayload {
   contentText: string
   ownerUserId?: string
   sourceUrl?: string
+  chatId?: string
+  chatType?: "group" | "p2p" | "unknown"
+  actorOpenId?: string
+  mentionedUserIds?: string[]
+  docToken?: string
+  wikiSpaceId?: string
+  folderToken?: string
+  calendarEventId?: string
   projectToBase?: boolean
+  hubId?: string
 }
 
 interface SourceIngestionResult {

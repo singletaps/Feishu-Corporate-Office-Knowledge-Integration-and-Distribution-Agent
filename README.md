@@ -59,6 +59,58 @@ npm run dev:tools
 npm run eval:report
 ```
 
+本地飞书端联调建议使用稳定单实例：
+
+```bash
+npm run build
+npm start
+```
+
+`npm run dev` 使用 `tsx watch`，适合开发代码，但在 Windows 上热重启时可能留下旧的 `src/index.ts` 或 `lark-cli event +subscribe` 子进程。做飞书消息链路验证时，如果刚改过监听代码，优先清理残留进程后用 `npm start` 启动。
+
+## 飞书事件订阅排障
+
+飞书 IM 消息无响应、`/help` 或 `/add` 偶发无输出时，优先检查是否存在多个本地事件消费者。`lark-cli event +subscribe` 对同一个 app 只应有一个消费者；多个消费者会导致消息被分流，当前服务日志看不到 `raw lark event received`。
+
+常见日志：
+
+```text
+another event +subscribe instance is already running for app ...
+Only one subscriber per app is allowed to prevent competing consumers.
+listen EADDRINUSE: address already in use :::8787
+```
+
+标准恢复步骤（PowerShell）：
+
+```powershell
+# 1. 查看 8787 是否被旧服务占用
+Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue |
+  Select-Object LocalAddress,LocalPort,OwningProcess
+
+# 2. 查看所有本地飞书事件订阅消费者
+Get-CimInstance Win32_Process |
+  Where-Object { $_.CommandLine -match 'event\s+\+subscribe|event \+subscribe|lark-cli.*subscribe' } |
+  Select-Object ProcessId,ParentProcessId,Name,CommandLine
+
+# 3. 关闭旧的 src/index.ts、tsx watch、lark-cli event +subscribe 进程
+Stop-Process -Id <pid1>,<pid2> -Force
+
+# 4. 确认端口和订阅进程已清空后，稳定启动单实例
+npm run build
+npm start
+```
+
+不要把 `--force` 作为常规解决方案。`--force` 只能抢占订阅检查，不能消除旧消费者；在 `tsx watch` 热重启或进程异常退出时，反而容易留下多个本地 `lark-cli.exe event +subscribe`，导致飞书消息继续分流。
+
+## 飞书机器人与 Hub 运行约束
+
+方向 D 的 IM 触达默认使用应用机器人身份：
+
+- 机器人必须加入目标群，且应用具备发送文本消息、发送交互卡片、更新卡片所需 scope。
+- `/help`、`/hub`、`/select-hub <hubId>`、会后确认卡片、风险卡片和 OpenClaw 问询回复都应显示为应用机器人发送。
+- Base 表创建、字段管理和记录写入暂时仍按多维表格权限独立验证，不随 IM 出站一刀切切换为 bot。
+- 多 Hub 首期会将现有 `FEISHU_BASE_TOKEN` / `FEISHU_BASE_TABLE_ID` 迁入默认 `legacy` Hub；后续团队 Hub 和个人 Hub 通过 `item_hubs` 与 `work_item_hub_projections` 管理投影。
+
 ## 重要文档
 
 - `FeishuProject.md`：赛题原文。

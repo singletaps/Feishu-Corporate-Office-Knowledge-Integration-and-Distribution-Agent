@@ -64,6 +64,18 @@ export interface WorkItem {
   priority: Priority | null
   ownerUserId: string | null
   ownerSource: "manual" | "inferred" | "inherited" | null
+  responsibleHubId: string | null
+  hubAssignmentSource:
+    | "explicit_binding"
+    | "chat_context"
+    | "doc_context"
+    | "calendar_context"
+    | "agent_decision"
+    | "manual_confirm"
+    | "inherited"
+    | "personal_fallback"
+    | "pending"
+    | null
   dueAt: Date | null
   confidenceScore: number | null
   needHumanConfirm: boolean
