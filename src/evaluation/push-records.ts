@@ -27,10 +27,30 @@ export async function recordPushRecord(input: {
 }
 
 export async function acknowledgePushRecordByMessage(messageId: string): Promise<void> {
+  await recordPushInteractionByMessage(messageId, {})
+}
+
+export async function recordPushInteractionByMessage(
+  messageId: string,
+  input: {
+    action?: string
+    actorId?: string
+    workItemId?: string | null
+  },
+): Promise<void> {
   await db.execute(
     `UPDATE push_records
-     SET clicked = true, delivery_status = 'acknowledged', acknowledged_at = now()
+     SET clicked = true,
+         delivery_status = 'acknowledged',
+         acknowledged_at = COALESCE(acknowledged_at, now()),
+         rendered_payload = COALESCE(rendered_payload, '{}'::jsonb)
+           || jsonb_strip_nulls(jsonb_build_object(
+                'lastCardAction', $2::text,
+                'lastCardActorId', $3::text,
+                'lastCardWorkItemId', $4::text,
+                'lastCardInteractedAt', now()
+              ))
      WHERE external_message_id = $1`,
-    [messageId],
+    [messageId, input.action ?? null, input.actorId ?? null, input.workItemId ?? null],
   )
 }

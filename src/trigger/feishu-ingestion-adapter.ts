@@ -1,5 +1,6 @@
-import { OriginChannel, type TriggerEvent } from "../shared/types.js"
+import { OriginChannel, type FeishuTaskDetail, type TriggerEvent } from "../shared/types.js"
 import type { HubCommandInput } from "../application/hub-command-service.js"
+import { classifySourceEventType } from "./event-config.js"
 
 export interface SourceIngestionPayload {
   originChannel: typeof OriginChannel[keyof typeof OriginChannel]
@@ -25,6 +26,22 @@ export type FeishuInboundRoute =
     payload: SourceIngestionPayload
     chatId?: string
     actorOpenId?: string
+  }
+  | {
+    kind: "source_pull"
+    eventType: string
+    originChannel: typeof OriginChannel.Doc | typeof OriginChannel.Wiki
+    originContextId: string
+    title?: string
+    ownerUserId?: string
+    sourceUrl?: string
+    chatId?: string
+    actorOpenId?: string
+    mentionedUserIds?: string[]
+    docToken?: string
+    wikiToken?: string
+    wikiSpaceId?: string
+    folderToken?: string
   }
   | {
     kind: "help"
@@ -58,26 +75,62 @@ export type FeishuInboundRoute =
     originChannel: typeof OriginChannel[keyof typeof OriginChannel]
     originContextId?: string
   }
+  | {
+    kind: "mail_ingestion"
+    eventType: string
+    payload: Record<string, unknown>
+    mailId?: string
+    threadId?: string
+    chatId?: string
+    actorOpenId?: string
+  }
+  | {
+    kind: "task_reconciliation"
+    eventType: string
+    taskId: string
+    taskDetail?: FeishuTaskDetail
+    actorOpenId?: string
+  }
 
 export function mapFeishuEventToInboundRoute(event: TriggerEvent): FeishuInboundRoute {
   if (event.eventType === "im.message.receive_v1" || event.eventType === "im_message") {
     return mapImMessageEvent(event)
   }
 
-  if (event.eventType === "doc_update") {
-    return pendingPull(event, OriginChannel.Doc, "doc update events need a document content pull before ingestion")
+  const sourceEventChannel = classifySourceEventType(event.eventType)
+  if (sourceEventChannel === OriginChannel.Doc) {
+    return mapDocUpdateEvent(event)
   }
-  if (event.eventType === "wiki_update") {
-    return pendingPull(event, OriginChannel.Wiki, "wiki update events need a wiki content pull before ingestion")
+  if (sourceEventChannel === OriginChannel.Wiki) {
+    return mapWikiUpdateEvent(event)
   }
-  if (event.eventType === "task_update") {
-    return pendingPull(event, OriginChannel.Task, "task update events should trigger task status reconciliation")
+  if (sourceEventChannel === OriginChannel.Task) {
+    return mapTaskUpdateEvent(event)
   }
-  if (event.eventType === "mail_received") {
-    return pendingPull(event, OriginChannel.Mail, "mail events need message body fetch and de-duplication before ingestion")
+  if (sourceEventChannel === OriginChannel.Mail) {
+    return mapMailReceivedEvent(event)
   }
 
   return mapGenericSourceEvent(event)
+}
+
+function mapMailReceivedEvent(event: TriggerEvent): FeishuInboundRoute {
+  const payload = event.payload
+  const mailId = getFirstString(payload, ["mailId", "mail_id", "messageId", "message_id", "id"])
+  const threadId = getFirstString(payload, ["threadId", "thread_id"])
+
+  if (!mailId && !threadId) {
+    return { kind: "ignore", reason: "mail event missing mail_id/thread_id", eventType: event.eventType }
+  }
+
+  return {
+    kind: "mail_ingestion",
+    eventType: event.eventType,
+    payload,
+    mailId: mailId || undefined,
+    threadId: threadId || undefined,
+    actorOpenId: getFirstString(payload, ["actorOpenId", "actor_open_id", "open_id", "user_id"]) || undefined,
+  }
 }
 
 function mapImMessageEvent(event: TriggerEvent): FeishuInboundRoute {
@@ -145,6 +198,101 @@ function mapImMessageEvent(event: TriggerEvent): FeishuInboundRoute {
   }
 }
 
+function mapDocUpdateEvent(event: TriggerEvent): FeishuInboundRoute {
+  const payload = event.payload
+  const docToken = getFirstString(payload, [
+    "docToken",
+    "doc_token",
+    "document_token",
+    "document_id",
+    "obj_token",
+    "token",
+  ])
+  const originContextId = docToken || getFirstString(payload, ["originContextId", "source_id", "id"])
+
+  if (!originContextId) {
+    return pendingPull(event, OriginChannel.Doc, "doc update event missing doc token")
+  }
+
+  return {
+    kind: "source_pull",
+    eventType: event.eventType,
+    originChannel: OriginChannel.Doc,
+    originContextId,
+    title: getFirstString(payload, ["title", "name"]) || undefined,
+    ownerUserId: getFirstString(payload, ["ownerUserId", "owner_user_id", "owner_id", "operator_id", "user_id"]) || undefined,
+    sourceUrl: getFirstString(payload, ["sourceUrl", "source_url", "url", "document_url"]) || undefined,
+    chatId: getFirstString(payload, ["chatId", "chat_id"]) || undefined,
+    actorOpenId: getFirstString(payload, ["actorOpenId", "actor_open_id", "operator_open_id", "open_id"]) || undefined,
+    mentionedUserIds: extractMentionedUserIds(payload),
+    docToken: docToken || originContextId,
+    folderToken: getFirstString(payload, ["folderToken", "folder_token", "parent_token"]) || undefined,
+  }
+}
+
+function mapWikiUpdateEvent(event: TriggerEvent): FeishuInboundRoute {
+  const payload = event.payload
+  const wikiToken = getFirstString(payload, [
+    "wikiToken",
+    "wiki_token",
+    "wiki_node_token",
+    "node_token",
+    "obj_token",
+    "token",
+  ])
+  const docToken = getFirstString(payload, ["docToken", "doc_token", "document_token", "document_id"])
+  const sourceUrl = getFirstString(payload, ["sourceUrl", "source_url", "url", "wiki_url", "document_url"])
+  const originContextId = wikiToken || docToken || getFirstString(payload, ["originContextId", "source_id", "id"])
+
+  if (!originContextId && !sourceUrl) {
+    return pendingPull(event, OriginChannel.Wiki, "wiki update event missing wiki/doc token")
+  }
+
+  return {
+    kind: "source_pull",
+    eventType: event.eventType,
+    originChannel: OriginChannel.Wiki,
+    originContextId: originContextId || sourceUrl,
+    title: getFirstString(payload, ["title", "name"]) || undefined,
+    ownerUserId: getFirstString(payload, ["ownerUserId", "owner_user_id", "owner_id", "operator_id", "user_id"]) || undefined,
+    sourceUrl: sourceUrl || undefined,
+    chatId: getFirstString(payload, ["chatId", "chat_id"]) || undefined,
+    actorOpenId: getFirstString(payload, ["actorOpenId", "actor_open_id", "operator_open_id", "open_id"]) || undefined,
+    mentionedUserIds: extractMentionedUserIds(payload),
+    docToken: docToken || undefined,
+    wikiToken: wikiToken || undefined,
+    wikiSpaceId: getFirstString(payload, ["wikiSpaceId", "wiki_space_id", "space_id"]) || undefined,
+    folderToken: getFirstString(payload, ["folderToken", "folder_token", "parent_token"]) || undefined,
+  }
+}
+
+function mapTaskUpdateEvent(event: TriggerEvent): FeishuInboundRoute {
+  const payload = event.payload
+  const taskId = getFirstString(payload, ["task_id", "task_guid", "guid", "id"])
+  if (!taskId) {
+    return { kind: "ignore", reason: "task update missing task_id", eventType: event.eventType }
+  }
+
+  const task = getObject(payload, "task") ?? getObject(payload, "task_info") ?? payload
+  const status = getFirstString(task, ["status", "task_status", "state"])
+  const title = getFirstString(task, ["summary", "title", "name"])
+  const url = getFirstString(task, ["url", "href", "origin_href"])
+
+  return {
+    kind: "task_reconciliation",
+    eventType: event.eventType,
+    taskId,
+    taskDetail: status ? {
+      taskId,
+      status,
+      title: title || null,
+      url: url || null,
+      raw: task,
+    } : undefined,
+    actorOpenId: getFirstString(payload, ["operator_id", "actor_open_id", "open_id"]) || undefined,
+  }
+}
+
 function mapGenericSourceEvent(event: TriggerEvent): FeishuInboundRoute {
   const payload = event.payload
   const originChannel = inferOriginChannel(event.eventType, payload)
@@ -200,7 +348,7 @@ function pendingPull(
     reason,
     eventType: event.eventType,
     originChannel,
-    originContextId: getFirstString(event.payload, ["doc_token", "wiki_token", "task_id", "mail_id", "id"]) || undefined,
+    originContextId: getFirstString(event.payload, ["doc_token", "document_token", "wiki_token", "task_id", "mail_id", "id"]) || undefined,
   }
 }
 
@@ -360,9 +508,10 @@ function getFirstString(payload: Record<string, unknown>, keys: string[]): strin
     const value = getFirstString(nestedEvent, keys)
     if (value) return value
   }
-  const message = getObject(payload, "message")
-  if (message) {
-    const value = getFirstString(message, keys)
+  for (const containerKey of ["message", "object", "document", "wiki", "node", "file", "operator", "sender"]) {
+    const nested = getObject(payload, containerKey)
+    if (!nested) continue
+    const value = getFirstString(nested, keys)
     if (value) return value
   }
   return ""

@@ -8,7 +8,11 @@ import { sendCardToChat, sendTextToChat } from "../integration/message.js"
 import { bindHubSession, findBoundHubForChat, resolveHubForChat } from "../application/hub-service.js"
 import { executeHubCommand } from "../application/hub-command-service.js"
 import { handleCardCallback as processCardCallback } from "../application/card-callback-service.js"
+import { buildSourceIngestionPayloadFromPull } from "../application/feishu-source-pull-service.js"
+import { buildMailSourceIngestionPayload } from "../application/mail-ingestion-service.js"
+import { reconcileFeishuTaskUpdateFlow } from "../application/task-reconciliation-service.js"
 import { mapFeishuEventToInboundRoute } from "./feishu-ingestion-adapter.js"
+import { classifySourceEventType, isConfiguredSourceEventType } from "./event-config.js"
 import type { postMeetingExtraction } from "../workflow/post-meeting.js"
 import type { sourceIngestion } from "../workflow/source-ingestion.js"
 import type { preMeetingBrief } from "../workflow/pre-meeting.js"
@@ -40,12 +44,19 @@ export async function dispatchToWorkflow(event: TriggerEvent): Promise<{ dispatc
 
   await markProcessed(event.idempotencyKey)
 
-  const handler = eventHandlers[event.eventType]
+  const handler = eventHandlers[event.eventType] ?? resolveConfiguredSourceEventHandler(event.eventType)
   if (!handler) {
     log.info("unhandled event type, ignoring", { eventType: event.eventType })
     return { dispatched: false }
   }
   return handler(event)
+}
+
+function resolveConfiguredSourceEventHandler(eventType: string): EventHandler | undefined {
+  if (classifySourceEventType(eventType) || isConfiguredSourceEventType(eventType)) {
+    return handleSourceIngestionEvent
+  }
+  return undefined
 }
 
 async function handleMeetingEnd(event: TriggerEvent): Promise<{ dispatched: boolean; runId?: string }> {
@@ -121,7 +132,7 @@ async function handleCardCallback(event: TriggerEvent): Promise<{ dispatched: bo
 }
 
 async function handleSourceIngestionEvent(event: TriggerEvent): Promise<{ dispatched: boolean; runId?: string }> {
-  const route = mapFeishuEventToInboundRoute(event)
+  let route = mapFeishuEventToInboundRoute(event)
 
   if (route.kind === "ignore") {
     log.info("inbound event ignored", {
@@ -130,6 +141,16 @@ async function handleSourceIngestionEvent(event: TriggerEvent): Promise<{ dispat
       reason: route.reason,
     })
     return { dispatched: false }
+  }
+
+  if (route.kind === "source_pull") {
+    const payload = await buildSourceIngestionPayloadFromPull(route)
+    route = {
+      kind: "source_ingestion",
+      payload,
+      chatId: route.chatId,
+      actorOpenId: route.actorOpenId,
+    }
   }
 
   if (route.kind === "pending_pull") {
@@ -141,6 +162,55 @@ async function handleSourceIngestionEvent(event: TriggerEvent): Promise<{ dispat
       reason: route.reason,
     })
     return { dispatched: false }
+  }
+
+  if (route.kind === "mail_ingestion") {
+    const mailPayload = await buildMailSourceIngestionPayload(route.payload)
+    if (!mailPayload) {
+      log.warn("mail event could not be mapped to source ingestion payload", {
+        eventId: event.eventId,
+        eventType: route.eventType,
+        mailId: route.mailId,
+        threadId: route.threadId,
+      })
+      return { dispatched: false }
+    }
+
+    const hub = route.chatId ? await findBoundHubForChat(route.chatId) : null
+    const handle = await tasks.trigger<typeof sourceIngestion>("source-ingestion", {
+      ...mailPayload,
+      chatId: route.chatId,
+      actorOpenId: route.actorOpenId ?? mailPayload.actorOpenId,
+      hubId: hub?.id,
+    })
+
+    log.info("mail source ingestion workflow dispatched", {
+      runId: handle.id,
+      originContextId: mailPayload.originContextId,
+      mailId: route.mailId,
+      threadId: route.threadId,
+      hubId: hub?.id,
+    })
+    return { dispatched: true, runId: handle.id }
+  }
+
+  if (route.kind === "task_reconciliation") {
+    const result = await reconcileFeishuTaskUpdateFlow({
+      taskId: route.taskId,
+      taskDetail: route.taskDetail,
+      eventId: event.eventId,
+      actorOpenId: route.actorOpenId,
+    })
+    log.info("task update reconciliation handled", {
+      eventId: event.eventId,
+      taskId: result.taskId,
+      externalStatus: result.externalStatus,
+      mappedStatus: result.mappedStatus,
+      action: result.sync?.action,
+      workItemId: result.sync?.workItemId,
+      source: result.source,
+    })
+    return { dispatched: true }
   }
 
   if (route.kind === "help") {

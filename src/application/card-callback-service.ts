@@ -1,11 +1,9 @@
 import { db } from "../shared/db.js"
 import { createFeishuTask } from "../integration/task.js"
-import { findById, updateStatus } from "../domain/work-item.js"
-import { projectWorkItemsToBase } from "../integration/base.js"
-import { acknowledgePushRecordByMessage } from "../evaluation/push-records.js"
+import { findById, update as updateWorkItem, updateStatus } from "../domain/work-item.js"
+import { recordPushInteractionByMessage } from "../evaluation/push-records.js"
 import { AppError } from "../shared/errors.js"
-import { assertHubPermission, ensurePrimaryProjection, resolveHubForChat, writeHubAudit } from "./hub-service.js"
-import type { WorkItem } from "../shared/types.js"
+import type { ItemStatus, WorkItem } from "../shared/types.js"
 
 export interface CardCallbackPayload {
   schema?: string
@@ -21,6 +19,7 @@ export interface CardCallbackPayload {
       value?: {
         action?: string
         workItemId?: string
+        workItemIds?: string[] | string
         hubId?: string
         actorOpenId?: string
         draftTitle?: string
@@ -47,6 +46,7 @@ export interface CardCallbackPayload {
     value?: {
       action?: string
       workItemId?: string
+      workItemIds?: string[] | string
       hubId?: string
       actorOpenId?: string
       draftTitle?: string
@@ -69,28 +69,59 @@ export async function handleCardCallback(payload: CardCallbackPayload): Promise<
   const value = actionPayload?.value ?? {}
   const formValue = actionPayload?.form_value ?? {}
   const actionName = actionPayload?.name ?? ""
-  const action = value.action ?? inferActionFromName(actionName)
+  const rawAction = stringValue(value.action) || inferActionFromName(actionName)
+  const action = normalizeCardAction(rawAction)
   const workItemId = value.workItemId ?? null
   const actorId = event?.operator?.open_id ?? payload.operator?.open_id ?? payload.open_id ?? "unknown"
   const messageId = event?.context?.open_message_id ?? payload.context?.open_message_id ?? payload.open_message_id
   const chatId = event?.context?.open_chat_id ?? payload.context?.open_chat_id
 
   if (messageId) {
-    await acknowledgePushRecordByMessage(messageId)
+    await recordPushInteractionByMessage(messageId, { action, actorId, workItemId })
   }
 
-  if ((action === "confirm" || action === "workitem.confirm") && workItemId) {
-    const item = await updateStatus(workItemId, "active", { type: "human", id: actorId }, "confirmed from card")
+  if (action === "workitem.confirm" && workItemId) {
+    const item = await confirmWorkItem(workItemId, actorId)
     const taskCreated = await createTaskForConfirmedItem(item.id)
     return { ok: true, action, workItemId, newStatus: item.status, taskCreated }
   }
 
-  if ((action === "reject" || action === "workitem.reject") && workItemId) {
-    const item = await updateStatus(workItemId, "closed", { type: "human", id: actorId }, "rejected from card")
+  if (action === "workitem.confirm_all") {
+    const workItemIds = readWorkItemIds(value)
+    if (workItemIds.length === 0) {
+      throw new AppError("Missing WorkItem IDs for confirm_all", "CARD_MISSING_WORK_ITEM_IDS", { value })
+    }
+    let lastItem: WorkItem | null = null
+    let taskCreated: string | null = null
+    for (const id of workItemIds) {
+      lastItem = await confirmWorkItem(id, actorId)
+      taskCreated = await createTaskForConfirmedItem(id) ?? taskCreated
+    }
+    return {
+      ok: true,
+      action,
+      workItemId: workItemIds.join(","),
+      newStatus: lastItem?.status ?? null,
+      taskCreated,
+    }
+  }
+
+  if (action === "workitem.reject" && workItemId) {
+    const item = await rejectWorkItem(workItemId, actorId)
     return { ok: true, action, workItemId, newStatus: item.status, taskCreated: null }
   }
 
-  if (action === "workitem.submit_draft") {
+  if (action === "workitem.edit" && workItemId) {
+    const item = await reviseWorkItem(workItemId, formValue, actorId)
+    return { ok: true, action, workItemId, newStatus: item.status, taskCreated: null }
+  }
+
+  if (action === "workitem.claim_risk" && workItemId) {
+    const item = await claimRiskWorkItem(workItemId, actorId)
+    return { ok: true, action, workItemId, newStatus: item.status, taskCreated: null }
+  }
+
+  if (action === "workitem.submit_draft" || action === "workitem.add_missing") {
     const item = await createWorkItemFromDraft(value, formValue, actorId, chatId)
     return { ok: true, action, workItemId: item.id, newStatus: item.status, taskCreated: null }
   }
@@ -111,6 +142,51 @@ export async function handleCardCallback(payload: CardCallbackPayload): Promise<
   })
 }
 
+async function confirmWorkItem(workItemId: string, actorId: string): Promise<WorkItem> {
+  const item = await setStatusIfNeeded(workItemId, "active", actorId, "confirmed from card")
+  await closeHumanReview(workItemId, "approved", actorId, "confirmed from card")
+  return await findById(workItemId) ?? item
+}
+
+async function rejectWorkItem(workItemId: string, actorId: string): Promise<WorkItem> {
+  const item = await setStatusIfNeeded(workItemId, "closed", actorId, "rejected from card")
+  await closeHumanReview(workItemId, "rejected", actorId, "rejected from card")
+  return await findById(workItemId) ?? item
+}
+
+async function reviseWorkItem(
+  workItemId: string,
+  formValue: Record<string, unknown>,
+  actorId: string,
+): Promise<WorkItem> {
+  const before = await requireWorkItem(workItemId)
+  const fields = readEditableFields(formValue, before)
+  if (Object.keys(fields).length === 0) {
+    throw new AppError("No editable WorkItem fields in card callback", "CARD_EMPTY_EDIT", { workItemId })
+  }
+
+  const updated = await updateWorkItem(workItemId, fields, { type: "human", id: actorId })
+  await writeFieldAuditEntries(before, updated, fields, actorId, "revised from card")
+  await closeHumanReview(workItemId, "revised", actorId, "revised from card")
+
+  if (updated.status === "new" || updated.status === "pending_review") {
+    return setStatusIfNeeded(workItemId, "active", actorId, "revised from card")
+  }
+  return await findById(workItemId) ?? updated
+}
+
+async function claimRiskWorkItem(workItemId: string, actorId: string): Promise<WorkItem> {
+  const before = await requireWorkItem(workItemId)
+  const updated = await updateWorkItem(workItemId, { ownerUserId: actorId }, { type: "human", id: actorId })
+  await writeFieldAuditEntries(before, updated, { ownerUserId: actorId }, actorId, "risk claimed from card")
+  await closeHumanReview(workItemId, "approved", actorId, "risk claimed from card")
+
+  if (updated.status === "new" || updated.status === "pending_review") {
+    return setStatusIfNeeded(workItemId, "active", actorId, "risk claimed from card")
+  }
+  return await findById(workItemId) ?? updated
+}
+
 async function createWorkItemFromDraft(
   value: Record<string, unknown>,
   formValue: Record<string, unknown>,
@@ -119,6 +195,8 @@ async function createWorkItemFromDraft(
 ): Promise<WorkItem> {
   const hubId = stringValue(value.hubId) || await resolveHubIdForDraft(chatId, actorId)
   if (!hubId) throw new AppError("Missing Hub ID in draft card", "CARD_MISSING_HUB", { value, chatId })
+  const { assertHubPermission, ensurePrimaryProjection, writeHubAudit } = await import("./hub-service.js")
+  const { projectWorkItemsToBase } = await import("../integration/base.js")
   await assertHubPermission(actorId, hubId, "item:write")
 
   const title = stringValue(formValue.title) || stringValue(value.draftTitle)
@@ -162,8 +240,110 @@ async function createWorkItemFromDraft(
   return rows[0]
 }
 
+async function requireWorkItem(workItemId: string): Promise<WorkItem> {
+  const item = await findById(workItemId)
+  if (!item) throw new AppError("WorkItem not found", "ITEM_NOT_FOUND", { workItemId })
+  return item
+}
+
+async function setStatusIfNeeded(
+  workItemId: string,
+  newStatus: ItemStatus,
+  actorId: string,
+  reason: string,
+): Promise<WorkItem> {
+  const item = await requireWorkItem(workItemId)
+  if (item.status === newStatus) return item
+  return updateStatus(workItemId, newStatus, { type: "human", id: actorId }, reason)
+}
+
+async function closeHumanReview(
+  workItemId: string,
+  reviewStatus: "approved" | "rejected" | "revised",
+  actorId: string,
+  reason: string,
+): Promise<void> {
+  const item = await requireWorkItem(workItemId)
+  await db.execute(
+    `UPDATE human_review_tasks
+     SET review_status = $2, assigned_reviewer = COALESCE(assigned_reviewer, $3), reviewed_at = now()
+     WHERE target_type = 'work_item'
+       AND target_id = $1
+       AND review_status = 'pending'`,
+    [workItemId, reviewStatus, actorId],
+  )
+
+  if (item.needHumanConfirm || item.currentReviewTaskId) {
+    await db.execute(
+      `UPDATE work_items
+       SET need_human_confirm = false,
+           current_review_task_id = NULL,
+           updated_at = now()
+       WHERE id = $1`,
+      [workItemId],
+    )
+    await db.execute(
+      `INSERT INTO work_item_audit_log
+         (work_item_id, change_type, field_name, from_value, to_value, reason, changed_by_type, changed_by_id)
+       VALUES ($1, 'field_update', 'need_human_confirm', $2, 'false', $3, 'human', $4)`,
+      [workItemId, String(item.needHumanConfirm), reason, actorId],
+    )
+  }
+}
+
+function readEditableFields(
+  formValue: Record<string, unknown>,
+  before: WorkItem,
+): Partial<Pick<WorkItem, "title" | "priority" | "ownerUserId" | "dueAt" | "metadata">> {
+  const fields: Partial<Pick<WorkItem, "title" | "priority" | "ownerUserId" | "dueAt" | "metadata">> = {}
+  const title = stringValue(formValue.title)
+  const priority = enumValue(formValue.priority, ["low", "medium", "high", "critical"], before.priority ?? "medium")
+  const ownerUserId = stringValue(formValue.ownerUserId)
+  const dueAt = dateValue(formValue.dueDate ?? formValue.dueAt)
+  const detail = stringValue(formValue.detail)
+
+  if (title && title !== before.title) fields.title = title
+  if (stringValue(formValue.priority) && priority !== before.priority) fields.priority = priority
+  if (ownerUserId && ownerUserId !== before.ownerUserId) fields.ownerUserId = ownerUserId
+  if (formValue.dueDate !== undefined || formValue.dueAt !== undefined) fields.dueAt = dueAt
+  if (detail && detail !== before.metadata?.detail) fields.metadata = { ...before.metadata, detail }
+
+  return fields
+}
+
+async function writeFieldAuditEntries(
+  before: WorkItem,
+  after: WorkItem,
+  fields: Partial<Pick<WorkItem, "title" | "priority" | "ownerUserId" | "dueAt" | "metadata">>,
+  actorId: string,
+  reason: string,
+): Promise<void> {
+  for (const fieldName of Object.keys(fields) as Array<keyof typeof fields>) {
+    const fromValue = serializeAuditValue(before[fieldName])
+    const toValue = serializeAuditValue(after[fieldName])
+    if (fromValue === toValue) continue
+    await db.execute(
+      `INSERT INTO work_item_audit_log
+         (work_item_id, change_type, field_name, from_value, to_value, reason, changed_by_type, changed_by_id)
+       VALUES ($1, 'field_update', $2, $3, $4, $5, 'human', $6)`,
+      [before.id, toSnakeFieldName(fieldName), fromValue, toValue, reason, actorId],
+    )
+  }
+}
+
+function readWorkItemIds(value: Record<string, unknown>): string[] {
+  const raw = value.workItemIds ?? value.workItemId
+  if (Array.isArray(raw)) return raw.map(stringValue).filter(Boolean)
+  return stringValue(raw)
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+}
+
 async function markWorkItemDone(workItemId: string, hubId: unknown, actorId: string): Promise<WorkItem> {
   const resolvedHubId = stringValue(hubId)
+  const { assertHubPermission, writeHubAudit } = await import("./hub-service.js")
+  const { projectWorkItemsToBase } = await import("../integration/base.js")
   if (resolvedHubId) await assertHubPermission(actorId, resolvedHubId, "item:write")
   const rows = await db.query<WorkItem>(
     `UPDATE work_items
@@ -186,6 +366,8 @@ async function markWorkItemDone(workItemId: string, hubId: unknown, actorId: str
 
 async function delayWorkItem(workItemId: string, hubId: unknown, days: number, actorId: string): Promise<WorkItem> {
   const resolvedHubId = stringValue(hubId)
+  const { assertHubPermission, writeHubAudit } = await import("./hub-service.js")
+  const { projectWorkItemsToBase } = await import("../integration/base.js")
   if (resolvedHubId) await assertHubPermission(actorId, resolvedHubId, "item:write")
   const safeDays = Number.isFinite(days) && days > 0 ? Math.min(Math.floor(days), 30) : 1
   const rows = await db.query<WorkItem>(
@@ -211,6 +393,7 @@ async function delayWorkItem(workItemId: string, hubId: unknown, days: number, a
 
 function stringValue(value: unknown): string {
   if (typeof value === "string") return value.trim()
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>
     return stringValue(obj.value ?? obj.text ?? obj.date)
@@ -232,11 +415,53 @@ function enumValue<T extends string>(value: unknown, allowed: T[], fallback: T):
 
 function inferActionFromName(name: string): string {
   if (name === "submitDraft") return "workitem.submit_draft"
+  if (name === "editWorkItem") return "workitem.edit"
+  if (name === "claimRisk") return "workitem.claim_risk"
   return ""
+}
+
+function normalizeCardAction(action: string): string {
+  const normalized = action.trim().toLowerCase()
+  const aliases: Record<string, string> = {
+    confirm: "workitem.confirm",
+    confirmed: "workitem.confirm",
+    approve: "workitem.confirm",
+    approved: "workitem.confirm",
+    "workitem.approve": "workitem.confirm",
+    reject: "workitem.reject",
+    rejected: "workitem.reject",
+    deny: "workitem.reject",
+    denied: "workitem.reject",
+    "workitem.deny": "workitem.reject",
+    edit: "workitem.edit",
+    modify: "workitem.edit",
+    modified: "workitem.edit",
+    "workitem.modify": "workitem.edit",
+    "workitem.revise": "workitem.edit",
+    claim: "workitem.claim_risk",
+    claimed: "workitem.claim_risk",
+    "risk.claim": "workitem.claim_risk",
+    "workitem.claim": "workitem.claim_risk",
+    add_missing: "workitem.add_missing",
+    "workitem.add": "workitem.add_missing",
+  }
+  return aliases[normalized] ?? normalized
+}
+
+function serializeAuditValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (value instanceof Date) return value.toISOString()
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+function toSnakeFieldName(fieldName: string): string {
+  return fieldName.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`)
 }
 
 async function resolveHubIdForDraft(chatId: string | undefined, actorId: string): Promise<string | null> {
   if (!chatId) return null
+  const { resolveHubForChat } = await import("./hub-service.js")
   const hub = await resolveHubForChat(chatId, actorId === "unknown" ? undefined : actorId)
   return hub.id
 }

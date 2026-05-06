@@ -3,17 +3,19 @@ import { createInterface } from "node:readline"
 import { log } from "../evaluation/logger.js"
 import { normalizeFeishuEvent } from "./normalizer.js"
 import { dispatchToWorkflow } from "./dispatcher.js"
+import { getSubscribedEventTypes } from "./event-config.js"
 
 const LARK_CLI = process.platform === "win32" ? "lark-cli.cmd" : "lark-cli"
 let activeListenerPid: number | null = null
 let shuttingDown = false
 
 export function startEventListener(): void {
-  log.info("starting lark-event listener")
+  const eventTypes = getSubscribedEventTypes()
+  log.info("starting lark-event listener", { eventTypes })
 
   const child = spawn(LARK_CLI, [
     "event", "+subscribe",
-    "--event-types", "im.message.receive_v1,card.action.trigger",
+    "--event-types", eventTypes.join(","),
     "--as", "bot",
     "--compact",
     "--quiet",

@@ -72,6 +72,33 @@ npm start
 
 飞书 IM 消息无响应、`/help` 或 `/add` 偶发无输出时，优先检查是否存在多个本地事件消费者。`lark-cli event +subscribe` 对同一个 app 只应有一个消费者；多个消费者会导致消息被分流，当前服务日志看不到 `raw lark event received`。
 
+本地监听默认只订阅已真实验证过的 IM 和卡片事件：
+
+```text
+im.message.receive_v1,card.action.trigger
+```
+
+如需启用文档、Wiki、任务或邮件事件，先在飞书开放平台确认应用已订阅并授权对应 EventKey，再通过环境变量扩展本地消费者。EventKey 不确定时不要改代码，直接配置别名：
+
+```powershell
+$env:FEISHU_EXTRA_EVENT_TYPES="doc_update,wiki_update,task_update,mail_received"
+$env:FEISHU_DOC_EVENT_TYPES="doc_update,<真实文档 EventKey>"
+$env:FEISHU_WIKI_EVENT_TYPES="wiki_update,<真实 Wiki EventKey>"
+$env:FEISHU_TASK_EVENT_TYPES="task_update,<真实任务 EventKey>"
+$env:FEISHU_MAIL_EVENT_TYPES="mail_received,<真实邮件 EventKey>"
+npm start
+```
+
+也可以用 `FEISHU_EVENT_TYPES` 覆盖完整订阅列表。`FEISHU_DOC_EVENT_TYPES` / `FEISHU_WIKI_EVENT_TYPES` / `FEISHU_TASK_EVENT_TYPES` / `FEISHU_MAIL_EVENT_TYPES` 用于把真实 EventKey 映射到已有 adapter，避免 lark-cli EventKey 与本地短名不一致时事件被忽略。
+
+真实文档或 Wiki 拉取可先只验证 source pull，不入库、不写 Base：
+
+```powershell
+$env:FEISHU_SOURCE_PULL_TARGET="<doc/wiki token 或 URL>"
+npm run validate:source-pull:real -- doc
+npm run validate:source-pull:real -- wiki
+```
+
 常见日志：
 
 ```text
@@ -114,11 +141,15 @@ npm start
 ## 重要文档
 
 - `FeishuProject.md`：赛题原文。
-- `FeishuAgent MVP 审阅整改计划.md`：当前审阅与整改基线。
 - `FeishuAgent 阶段任务规划.md`：当前阶段与后续阶段任务划分。
+- `阶段3审阅设计文档.md`：阶段 3 文档收敛、实现差距和下一步目标。
+- `FeishuAgent MVP 审阅整改计划.md`：MVP 审阅与整改基线，后续以阶段 3 文档更新当前状态。
+- `概要设计说明书+FeishuAPI.md`：场景定义、需求范围、飞书能力映射和评测方案。
 - `架构设计说明书.md`：最终系统架构设计。
 - `对象模型与模块设计说明.md`：对象模型和数据库逻辑设计。
 - `OpenClaw主体化方案.md`：OpenClaw 作为 Agent 主体的设计说明。
+- `WorkItem Hub 归属边界条件设计.md`：多 Hub 归属、投影、触达和 OpenClaw 判定边界。
+- `docs/archive/`：历史审阅、过程验证和周报类材料，默认不作为当前事实入口。
 
 ## 安全提示
 

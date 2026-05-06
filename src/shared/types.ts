@@ -81,6 +81,7 @@ export interface WorkItem {
   needHumanConfirm: boolean
   originChannel: OriginChannel
   originContextId: string
+  currentReviewTaskId: string | null
   dedupeKey: string | null
   metadata: Record<string, unknown>
   firstDetectedAt: Date | null
@@ -166,6 +167,14 @@ export interface CreateTaskParams {
 export interface FeishuTaskResult {
   taskId: string
   url: string
+}
+
+export interface FeishuTaskDetail {
+  taskId: string
+  status: string | null
+  title?: string | null
+  url?: string | null
+  raw?: Record<string, unknown>
 }
 
 // ----- Domain types -----

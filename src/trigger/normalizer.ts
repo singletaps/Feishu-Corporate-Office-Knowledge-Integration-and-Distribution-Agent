@@ -57,12 +57,13 @@ export function normalizeCardCallback(callbackPayload: Record<string, unknown>):
   const messageId = String(context?.open_message_id ?? topContext?.open_message_id ?? callbackPayload.open_message_id ?? randomUUID())
   const action = (event?.action ?? callbackPayload.action) as { value?: { action?: string; workItemId?: string } } | undefined
   const actionName = action?.value?.action ?? "unknown"
+  const workItemId = action?.value?.workItemId ?? "none"
 
   return {
     eventId: randomUUID(),
     eventType: "card_callback",
     source: "card_callback",
-    idempotencyKey: `card_callback::${messageId}::${actionName}`,
+    idempotencyKey: `card_callback::${messageId}::${actionName}::${workItemId}`,
     payload: callbackPayload,
     occurredAt: new Date(),
     receivedAt: new Date(),

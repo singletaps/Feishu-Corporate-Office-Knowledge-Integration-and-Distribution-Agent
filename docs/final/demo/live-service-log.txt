@@ -1,0 +1,45 @@
+﻿> feishuagent@1.0.0 start
+> node dist/index.js
+
+{"level":"info","msg":"feishu agent starting","ts":"2026-05-06T12:58:03.278Z","logLevel":"info"}
+{"level":"info","msg":"redis connected","ts":"2026-05-06T12:58:03.302Z"}
+{"level":"info","msg":"database connected","ts":"2026-05-06T12:58:03.326Z","serverTime":"2026-05-06T12:58:03.311Z"}
+{"level":"info","msg":"redis connected","ts":"2026-05-06T12:58:03.328Z","ping":"PONG"}
+{"level":"info","msg":"all services healthy","ts":"2026-05-06T12:58:03.328Z"}
+{"level":"info","msg":"starting lark-event listener","ts":"2026-05-06T12:58:03.331Z","eventTypes":["im.message.receive_v1","card.action.trigger"]}
+{"level":"info","msg":"feishu agent running 鈥?listening for events and agent tool calls","ts":"2026-05-06T12:58:03.344Z"}
+{"level":"info","msg":"agent tools server listening","ts":"2026-05-06T12:58:03.345Z","port":8787}
+{"level":"info","msg":"raw lark event received","ts":"2026-05-06T12:59:00.118Z","line":"{\"chat_id\":\"oc_bdf5ade7531e192797c48422cd261910\",\"chat_type\":\"p2p\",\"content\":\"/help\",\"create_time\":\"1778072339994\",\"id\":\"om_x100b5087fff01c94c350c54fd186ec4\",\"message_id\":\"om_x100b5087fff01c94c350c54fd186ec4\",\"message_type\":\"text\",\"sender_id\":\"ou_8ce96a0c2e3fdc3eaf377a0ecdb79b8c\",\"timestamp\":\"1778072340359\",\"type\":\"im.message.receive_v1\"}"}
+{"level":"info","msg":"normalizing feishu event","ts":"2026-05-06T12:59:00.118Z","eventId":"c0ff3ee0-8f81-4ebe-b8fa-c279b233b931","eventType":"im.message.receive_v1"}
+{"level":"info","msg":"sending text to chat","ts":"2026-05-06T12:59:00.123Z","chatId":"oc_bdf5ade7531e192797c48422cd261910","textLength":500}
+{"level":"info","msg":"lark-cli stdin call","ts":"2026-05-06T12:59:00.124Z","args":"api POST /open-apis/im/v1/messages --as bot --params {\"receive_id_type\":\"chat_id\"} --data -","stdinLength":628}
+{"level":"info","msg":"inbound help message handled","ts":"2026-05-06T12:59:01.695Z","eventId":"c0ff3ee0-8f81-4ebe-b8fa-c279b233b931","chatId":"oc_bdf5ade7531e192797c48422cd261910"}
+{"level":"info","msg":"event dispatched to workflow","ts":"2026-05-06T12:59:01.695Z","eventId":"c0ff3ee0-8f81-4ebe-b8fa-c279b233b931"}
+{"level":"info","msg":"raw lark event received","ts":"2026-05-06T12:59:04.544Z","line":"{\"chat_id\":\"oc_bdf5ade7531e192797c48422cd261910\",\"chat_type\":\"p2p\",\"content\":\"/hub\",\"create_time\":\"1778072344328\",\"id\":\"om_x100b5087ff4ea4b0c11c5a937e1be8a\",\"message_id\":\"om_x100b5087ff4ea4b0c11c5a937e1be8a\",\"message_type\":\"text\",\"sender_id\":\"ou_8ce96a0c2e3fdc3eaf377a0ecdb79b8c\",\"timestamp\":\"1778072344706\",\"type\":\"im.message.receive_v1\"}"}
+{"level":"info","msg":"normalizing feishu event","ts":"2026-05-06T12:59:04.544Z","eventId":"c1b2139a-e23b-4130-94dd-dca051073f39","eventType":"im.message.receive_v1"}
+{"level":"info","msg":"sending text to chat","ts":"2026-05-06T12:59:04.570Z","chatId":"oc_bdf5ade7531e192797c48422cd261910","textLength":598}
+{"level":"info","msg":"lark-cli stdin call","ts":"2026-05-06T12:59:04.570Z","args":"api POST /open-apis/im/v1/messages --as bot --params {\"receive_id_type\":\"chat_id\"} --data -","stdinLength":734}
+{"level":"info","msg":"event dispatched to workflow","ts":"2026-05-06T12:59:06.139Z","eventId":"c1b2139a-e23b-4130-94dd-dca051073f39"}
+{"level":"info","msg":"raw lark event received","ts":"2026-05-06T12:59:08.312Z","line":"{\"chat_id\":\"oc_bdf5ade7531e192797c48422cd261910\",\"chat_type\":\"p2p\",\"content\":\"/add FeishuAgent 闃舵3璇勫婕旂ず寰呭姙 20260506-205858\",\"create_time\":\"1778072348288\",\"id\":\"om_x100b5087ff0ff4acc14bd2bf126a7c4\",\"message_id\":\"om_x100b5087ff0ff4acc14bd2bf126a7c4\",\"message_type\":\"text\",\"sender_id\":\"ou_8ce96a0c2e3fdc3eaf377a0ecdb79b8c\",\"timestamp\":\"1778072348617\",\"type\":\"im.message.receive_v1\"}"}
+{"level":"info","msg":"normalizing feishu event","ts":"2026-05-06T12:59:08.312Z","eventId":"992a67a9-0642-4071-865b-cc55912a7f00","eventType":"im.message.receive_v1"}
+{"level":"info","msg":"sending card to chat","ts":"2026-05-06T12:59:08.324Z","chatId":"oc_bdf5ade7531e192797c48422cd261910"}
+{"level":"info","msg":"lark-cli stdin call","ts":"2026-05-06T12:59:08.324Z","args":"api POST /open-apis/im/v1/messages --as bot --params {\"receive_id_type\":\"chat_id\"} --data -","stdinLength":2663}
+{"level":"info","msg":"card sent","ts":"2026-05-06T12:59:09.854Z","chatId":"oc_bdf5ade7531e192797c48422cd261910","messageId":"om_x100b5087ff1150a8c10cd4673fed465"}
+{"level":"info","msg":"event dispatched to workflow","ts":"2026-05-06T12:59:09.854Z","eventId":"992a67a9-0642-4071-865b-cc55912a7f00"}
+{"level":"info","msg":"raw lark event received","ts":"2026-05-06T12:59:12.530Z","line":"{\"chat_id\":\"oc_bdf5ade7531e192797c48422cd261910\",\"chat_type\":\"p2p\",\"content\":\"/list\",\"create_time\":\"1778072352538\",\"id\":\"om_x100b5087fccb24b8c4dd5253d25e686\",\"message_id\":\"om_x100b5087fccb24b8c4dd5253d25e686\",\"message_type\":\"text\",\"sender_id\":\"ou_8ce96a0c2e3fdc3eaf377a0ecdb79b8c\",\"timestamp\":\"1778072352852\",\"type\":\"im.message.receive_v1\"}"}
+{"level":"info","msg":"normalizing feishu event","ts":"2026-05-06T12:59:12.530Z","eventId":"081c91e5-897e-4f93-bd5d-d182848b3a8e","eventType":"im.message.receive_v1"}
+{"level":"info","msg":"sending card to chat","ts":"2026-05-06T12:59:12.550Z","chatId":"oc_bdf5ade7531e192797c48422cd261910"}
+{"level":"info","msg":"lark-cli stdin call","ts":"2026-05-06T12:59:12.550Z","args":"api POST /open-apis/im/v1/messages --as bot --params {\"receive_id_type\":\"chat_id\"} --data -","stdinLength":299}
+{"level":"info","msg":"card sent","ts":"2026-05-06T12:59:14.089Z","chatId":"oc_bdf5ade7531e192797c48422cd261910","messageId":"om_x100b5087fcef98a4c39a3d95b0b564b"}
+{"level":"info","msg":"event dispatched to workflow","ts":"2026-05-06T12:59:14.089Z","eventId":"081c91e5-897e-4f93-bd5d-d182848b3a8e"}
+{"level":"info","msg":"raw lark event received","ts":"2026-05-06T12:59:16.996Z","line":"{\"chat_id\":\"oc_bdf5ade7531e192797c48422cd261910\",\"chat_type\":\"p2p\",\"content\":\"FeishuAgent 闃舵3璇勫婕旂ず锛氬緟鍔?璇疯礋璐ｄ汉 ou_8ce96a0c2e3fdc3eaf377a0ecdb79b8c 鍦ㄦ槑澶╁墠瀹屾垚椋庨櫓澶嶇洏\",\"create_time\":\"1778072356892\",\"id\":\"om_x100b5087fc8678a4c4e890a462bcc2c\",\"message_id\":\"om_x100b5087fc8678a4c4e890a462bcc2c\",\"message_type\":\"text\",\"sender_id\":\"ou_8ce96a0c2e3fdc3eaf377a0ecdb79b8c\",\"timestamp\":\"1778072357311\",\"type\":\"im.message.receive_v1\"}"}
+{"level":"info","msg":"normalizing feishu event","ts":"2026-05-06T12:59:16.996Z","eventId":"a0ff4224-1b91-481a-95af-aa27d493b261","eventType":"im.message.receive_v1"}
+{"level":"info","msg":"source ingestion workflow dispatched","ts":"2026-05-06T12:59:18.884Z","runId":"run_cmou2dgxl34av0umzosyoaru8","originChannel":"im","originContextId":"om_x100b5087fc8678a4c4e890a462bcc2c","chatId":"oc_bdf5ade7531e192797c48422cd261910","hubId":"dd2dabe0-d7f5-4278-b391-024e856edbe4"}
+{"level":"info","msg":"event dispatched to workflow","ts":"2026-05-06T12:59:18.884Z","eventId":"a0ff4224-1b91-481a-95af-aa27d493b261","runId":"run_cmou2dgxl34av0umzosyoaru8"}
+{"level":"info","msg":"raw lark event received","ts":"2026-05-06T12:59:20.912Z","line":"{\"chat_id\":\"oc_bdf5ade7531e192797c48422cd261910\",\"chat_type\":\"p2p\",\"content\":\"/ask 鎬荤粨褰撳墠闃诲浜嬮」\",\"create_time\":\"1778072360858\",\"id\":\"om_x100b5087fc46e0a4c4f27566cde19fb\",\"message_id\":\"om_x100b5087fc46e0a4c4f27566cde19fb\",\"message_type\":\"text\",\"sender_id\":\"ou_8ce96a0c2e3fdc3eaf377a0ecdb79b8c\",\"timestamp\":\"1778072361160\",\"type\":\"im.message.receive_v1\"}"}
+{"level":"info","msg":"normalizing feishu event","ts":"2026-05-06T12:59:20.912Z","eventId":"ae826039-9524-4ca6-adba-37cb82a1e43f","eventType":"im.message.receive_v1"}
+{"level":"info","msg":"agent tool request","ts":"2026-05-06T12:59:41.410Z","path":"/tools/queryWorkItems"}
+{"level":"info","msg":"sending text to chat","ts":"2026-05-06T12:59:43.905Z","chatId":"oc_bdf5ade7531e192797c48422cd261910","textLength":164}
+{"level":"info","msg":"lark-cli stdin call","ts":"2026-05-06T12:59:43.905Z","args":"api POST /open-apis/im/v1/messages --as bot --params {\"receive_id_type\":\"chat_id\"} --data -","stdinLength":278}
+{"level":"info","msg":"inbound agent question handled","ts":"2026-05-06T12:59:45.423Z","eventId":"ae826039-9524-4ca6-adba-37cb82a1e43f","chatId":"oc_bdf5ade7531e192797c48422cd261910"}
+{"level":"info","msg":"event dispatched to workflow","ts":"2026-05-06T12:59:45.423Z","eventId":"ae826039-9524-4ca6-adba-37cb82a1e43f"}

@@ -34,7 +34,7 @@ flowchart LR
 
 ### 当前状态
 
-进行中。
+已完成。根目录文档已收敛为当前主线入口，历史审阅、过程验证和周报材料已移入 `docs/archive/`；阶段 3 后续以 `阶段3审阅设计文档.md` 作为当前工作台账。
 
 ### 任务
 
@@ -109,6 +109,10 @@ flowchart LR
 ### 目标
 
 从“会议入口”扩展到最终要求中的多源知识接入，真正形成团队事项中枢。
+
+### 当前状态
+
+进行中。IM 入站分流、source ingestion、Hub 归属证据包、多 Hub 数据模型和 guardrails 已具备代码骨架；Docs / Wiki、Task、Mail 仍主要停留在 `pending_pull`，需要补拉取 adapter 和真实联调。
 
 ### 任务
 

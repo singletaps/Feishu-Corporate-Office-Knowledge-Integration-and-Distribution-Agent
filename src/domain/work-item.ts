@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { callLLM } from "./llm.js"
+import { mapFeishuTaskStatus } from "./task-status.js"
 import { db } from "../shared/db.js"
 import { log } from "../evaluation/logger.js"
 import { AppError, ItemNotFoundError } from "../shared/errors.js"
@@ -171,9 +172,9 @@ export async function reconcileAndSave(
 // ----- Status update -----
 
 const VALID_TRANSITIONS: Record<string, string[]> = {
-  new: ["pending_review", "active", "closed"],
-  pending_review: ["active", "closed"],
-  active: ["blocked", "done"],
+  new: ["pending_review", "active", "done", "closed"],
+  pending_review: ["active", "done", "closed"],
+  active: ["blocked", "done", "closed"],
   blocked: ["active", "closed"],
   done: ["closed"],
 }
@@ -311,31 +312,116 @@ export async function syncExternalTaskStatuses(statuses: Map<string, string>): P
   const changed: WorkItem[] = []
 
   for (const [taskId, externalStatus] of statuses.entries()) {
-    const binding = await db.queryOne<{ workItemId: string }>(
-      `SELECT work_item_id FROM task_bindings
-       WHERE binding_type = 'feishu_task' AND external_id = $1`,
-      [taskId],
-    )
-
-    if (!binding) continue
-
-    const item = await findById(binding.workItemId)
-    if (!item) continue
-
-    const nextStatus = mapFeishuTaskStatus(externalStatus, item.status)
-    if (nextStatus === item.status) continue
-
-    const updated = await updateStatus(
-      item.id,
-      nextStatus,
-      { type: "sync", id: `feishu_task:${taskId}` },
-      `synced from feishu task status: ${externalStatus}`,
-    )
-    changed.push(updated)
+    const result = await syncExternalTaskStatus(taskId, externalStatus)
+    if (result.action === "updated" && result.item) changed.push(result.item)
   }
 
   log.info("external task statuses synced", { changedCount: changed.length })
   return changed
+}
+
+export type FeishuTaskSyncResult =
+  | {
+    action: "updated"
+    taskId: string
+    workItemId: string
+    externalStatus: string
+    fromStatus: ItemStatus
+    toStatus: ItemStatus
+    item: WorkItem
+  }
+  | {
+    action: "unchanged" | "ignored"
+    taskId: string
+    workItemId?: string
+    externalStatus: string
+    currentStatus?: ItemStatus
+    mappedStatus?: ItemStatus
+    reason?: string
+  }
+
+export async function syncExternalTaskStatus(
+  taskId: string,
+  externalStatus: string,
+): Promise<FeishuTaskSyncResult> {
+  const binding = await db.queryOne<{ id: string; workItemId: string }>(
+    `SELECT id, work_item_id FROM task_bindings
+     WHERE binding_type = 'feishu_task' AND external_id = $1
+     ORDER BY is_primary DESC, created_at DESC
+     LIMIT 1`,
+    [taskId],
+  )
+
+  if (!binding) {
+    log.warn("feishu task update ignored because no work item binding was found", { taskId, externalStatus })
+    return { action: "ignored", taskId, externalStatus, reason: "missing_feishu_task_binding" }
+  }
+
+  const item = await findById(binding.workItemId)
+  if (!item) {
+    await markTaskBindingSync(binding.id, "failed", "bound work item not found")
+    log.warn("feishu task update ignored because bound work item was not found", {
+      taskId,
+      workItemId: binding.workItemId,
+    })
+    return {
+      action: "ignored",
+      taskId,
+      workItemId: binding.workItemId,
+      externalStatus,
+      reason: "bound_work_item_missing",
+    }
+  }
+
+  const nextStatus = mapFeishuTaskStatus(externalStatus, item.status)
+  if (!nextStatus) {
+    await markTaskBindingSync(binding.id, "conflict", `unmapped feishu task status: ${externalStatus}`)
+    log.info("feishu task status left unchanged because status is unmapped", {
+      taskId,
+      workItemId: item.id,
+      externalStatus,
+      currentStatus: item.status,
+    })
+    return {
+      action: "ignored",
+      taskId,
+      workItemId: item.id,
+      externalStatus,
+      currentStatus: item.status,
+      reason: "unmapped_status",
+    }
+  }
+
+  await markTaskBindingSync(binding.id, "synced")
+  await markWorkItemSynced(item.id)
+
+  if (nextStatus === item.status) {
+    return {
+      action: "unchanged",
+      taskId,
+      workItemId: item.id,
+      externalStatus,
+      currentStatus: item.status,
+      mappedStatus: nextStatus,
+    }
+  }
+
+  const updated = await updateStatus(
+    item.id,
+    nextStatus,
+    { type: "sync", id: `feishu_task:${taskId}` },
+    `synced from feishu task status: ${externalStatus}`,
+  )
+
+  return {
+    action: "updated",
+    taskId,
+    workItemId: item.id,
+    externalStatus,
+    fromStatus: item.status,
+    toStatus: nextStatus,
+    item: updated,
+  }
 }
 
 export async function listByOrigin(originContextId: string): Promise<WorkItem[]> {
@@ -410,9 +496,31 @@ function generateDedupeKey(title: string, contextId: string, mergeAcrossSources:
   return `${contextId}::${normalized}`
 }
 
-function mapFeishuTaskStatus(externalStatus: string, current: ItemStatus): ItemStatus {
-  if (externalStatus === "done" || externalStatus === "completed") return "done"
-  if (externalStatus === "deleted" || externalStatus === "closed") return "closed"
-  if (current === "new" || current === "pending_review") return "active"
-  return current
+export { mapFeishuTaskStatus } from "./task-status.js"
+
+async function markTaskBindingSync(
+  bindingId: string,
+  syncStatus: "synced" | "conflict" | "failed",
+  error?: string,
+): Promise<void> {
+  await db.execute(
+    `UPDATE task_bindings
+     SET sync_status = $2,
+         last_sync_at = now(),
+         last_sync_error = $3,
+         updated_at = now()
+     WHERE id = $1`,
+    [bindingId, syncStatus, error ?? null],
+  )
+}
+
+async function markWorkItemSynced(workItemId: string): Promise<void> {
+  await db.execute(
+    `UPDATE work_items
+     SET last_synced_at = now(),
+         last_touched_by_workflow = 'feishu-task-sync',
+         updated_at = now()
+     WHERE id = $1`,
+    [workItemId],
+  )
 }

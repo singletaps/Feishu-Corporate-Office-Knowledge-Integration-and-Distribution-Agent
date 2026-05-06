@@ -1,6 +1,14 @@
 import { larkCli, larkCliStdin } from "./lark-cli.js"
 import { log } from "../evaluation/logger.js"
 
+type LarkCliStdinTransport = typeof larkCliStdin
+
+let larkCliStdinTransport: LarkCliStdinTransport = larkCliStdin
+
+export function setMessageTransportForTest(transport: LarkCliStdinTransport | null): void {
+  larkCliStdinTransport = transport ?? larkCliStdin
+}
+
 export async function sendCardToChat(chatId: string, cardJson: Record<string, unknown>): Promise<string> {
   log.info("sending card to chat", { chatId })
   const data = await sendInteractiveMessage("chat_id", chatId, cardJson)
@@ -21,7 +29,7 @@ export async function sendCardToUser(openId: string, cardJson: Record<string, un
 
 export async function sendTextToChat(chatId: string, text: string): Promise<string> {
   log.info("sending text to chat", { chatId, textLength: text.length })
-  const data = (await larkCliStdin([
+  const data = (await larkCliStdinTransport([
     "api",
     "POST",
     "/open-apis/im/v1/messages",
@@ -55,7 +63,7 @@ async function sendInteractiveMessage(
   receiveId: string,
   cardJson: Record<string, unknown>,
 ): Promise<{ messageId: string }> {
-  const response = await larkCliStdin([
+  const response = await larkCliStdinTransport([
     "api",
     "POST",
     "/open-apis/im/v1/messages",

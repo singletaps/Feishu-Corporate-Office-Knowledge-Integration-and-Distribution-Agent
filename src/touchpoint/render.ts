@@ -116,7 +116,7 @@ export function renderPostMeetingCard(items: WorkItem[], meetingTitle: string): 
             tag: "button",
             text: { tag: "plain_text", content: "✅ 全部确认" },
             type: "primary",
-            value: { action: "workitem.confirm_all" },
+            value: { action: "workitem.confirm_all", workItemIds: items.map((item) => item.id) },
           },
           {
             tag: "button",
@@ -309,16 +309,32 @@ function renderWorkItemSummaryBlock(item: WorkItem, index: number): Record<strin
 }
 
 export function renderRiskAlertCard(items: WorkItem[]): Record<string, unknown> {
-  const itemLines = items
+  const itemElements = items
     .map((item) => {
       const status = STATUS_LABELS[item.status] ?? item.status
       const overdueDays = item.dueAt
         ? Math.floor((Date.now() - new Date(item.dueAt).getTime()) / 86400000)
         : null
       const overdueText = overdueDays && overdueDays > 0 ? `超期 ${overdueDays} 天` : ""
-      return `- **${item.title}**\n  状态: ${status} ${overdueText}`
+      return [
+        {
+          tag: "markdown",
+          content: `- **${item.title}**\n  状态: ${status} ${overdueText}`,
+        },
+        {
+          tag: "action",
+          actions: [
+            {
+              tag: "button",
+              text: { tag: "plain_text", content: "认领风险" },
+              type: "primary",
+              value: { action: "workitem.claim_risk", workItemId: item.id },
+            },
+          ],
+        },
+      ]
     })
-    .join("\n")
+    .flat()
 
   return {
     config: { wide_screen_mode: true },
@@ -329,8 +345,9 @@ export function renderRiskAlertCard(items: WorkItem[]): Record<string, unknown> 
     elements: [
       {
         tag: "markdown",
-        content: `发现 **${items.length}** 条需要关注的事项：\n\n${itemLines}`,
+        content: `发现 **${items.length}** 条需要关注的事项：`,
       },
+      ...itemElements,
     ],
   }
 }
